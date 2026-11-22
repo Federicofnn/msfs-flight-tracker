@@ -399,6 +399,27 @@ impl App {
         let _ = self.net_tx.send(NetJob::UpdateCheck(url));
     }
 
+    /// Runs the downloaded setup once the aircraft is on the ground and no
+    /// flight is being recorded, then closes so the installer can replace it.
+    fn apply_downloaded_update(&mut self, ctx: &egui::Context) {
+        if self.recorder.active {
+            return;
+        }
+        let Some(path) = self.update_state.installer.clone() else {
+            return;
+        };
+        match update::run_installer(&path) {
+            Ok(()) => {
+                self.update_state.status = "Installing the new version…".to_string();
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+            Err(err) => {
+                self.update_state.error = err;
+                self.update_state.installer = None;
+            }
+        }
+    }
+
     pub fn install_update(&mut self) {
         let Some(release) = self.update_state.available.clone() else {
             return;
@@ -653,9 +674,10 @@ impl App {
                     match result {
                         Ok(Some(release)) => {
                             self.update_state.status =
-                                format!("Version {} is available", release.version);
+                                format!("Downloading version {}…", release.version);
                             self.update_state.notes = release.notes.clone();
                             self.update_state.available = Some(release);
+                            self.install_update();
                         }
                         Ok(None) => {
                             self.update_state.status = "You are up to date".to_string();
@@ -670,15 +692,9 @@ impl App {
                     self.update_state.downloading = false;
                     match result {
                         Ok(path) => {
-                            self.update_state.installer = Some(path.clone());
-                            match update::run_installer(&path) {
-                                Ok(()) => {
-                                    self.update_state.status =
-                                        "Installing the new version…".to_string();
-                                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                                }
-                                Err(err) => self.update_state.error = err,
-                            }
+                            self.update_state.installer = Some(path);
+                            self.update_state.status =
+                                "Update downloaded, installing…".to_string();
                         }
                         Err(err) => self.update_state.error = err,
                     }
@@ -965,6 +981,7 @@ impl App {
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.pump(ctx);
+        self.apply_downloaded_update(ctx);
         self.handle_dropped_files(ctx);
         self.shell(ctx);
         self.toast_ui(ctx);

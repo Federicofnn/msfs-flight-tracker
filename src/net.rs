@@ -91,19 +91,43 @@ impl Drop for Request {
     }
 }
 
-fn parse_url(url: &str) -> Result<(String, String), String> {
-    let rest = url
-        .strip_prefix("https://")
-        .or_else(|| url.strip_prefix("http://"))
-        .ok_or_else(|| format!("Unsupported URL: {url}"))?;
-    let (host, path) = match rest.find('/') {
+struct Endpoint {
+    host: String,
+    port: u16,
+    secure: bool,
+    path: String,
+}
+
+fn parse_url(url: &str) -> Result<Endpoint, String> {
+    let (secure, rest) = if let Some(rest) = url.strip_prefix("https://") {
+        (true, rest)
+    } else if let Some(rest) = url.strip_prefix("http://") {
+        (false, rest)
+    } else {
+        return Err(format!("Unsupported URL: {url}"));
+    };
+    let (authority, path) = match rest.find('/') {
         Some(i) => (&rest[..i], &rest[i..]),
         None => (rest, "/"),
+    };
+    let (host, port) = match authority.rsplit_once(':') {
+        Some((host, port)) if !port.is_empty() && port.chars().all(|c| c.is_ascii_digit()) => {
+            let port: u16 = port
+                .parse()
+                .map_err(|_| format!("Invalid port in {url}"))?;
+            (host, port)
+        }
+        _ => (authority, if secure { 443 } else { 80 }),
     };
     if host.is_empty() {
         return Err("Empty host".to_string());
     }
-    Ok((host.to_string(), path.to_string()))
+    Ok(Endpoint {
+        host: host.to_string(),
+        port,
+        secure,
+        path: path.to_string(),
+    })
 }
 
 fn read_status(request: Handle) -> u32 {
@@ -158,8 +182,9 @@ pub fn http_get(url: &str) -> Result<Vec<u8>, String> {
 pub fn http_get_max(url: &str, max: usize) -> Result<Vec<u8>, String> {
     let mut current = url.to_string();
     for _ in 0..4 {
-        let (host, path) = parse_url(&current)?;
-        let (body, status, location) = request_once(&host, &path, max)?;
+        let endpoint = parse_url(&current)?;
+        let (body, status, location) =
+            request_once(&endpoint.host, endpoint.port, endpoint.secure, &endpoint.path, max)?;
         if (300..400).contains(&status) {
             if let Some(next) = location {
                 current = next;
@@ -170,7 +195,7 @@ pub fn http_get_max(url: &str, max: usize) -> Result<Vec<u8>, String> {
             return Err("Network request failed (no response)".to_string());
         }
         if !(200..300).contains(&status) {
-            return Err(format!("HTTP {status} from {host}"));
+            return Err(format!("HTTP {status} from {}", endpoint.host));
         }
         return Ok(body);
     }
@@ -179,6 +204,8 @@ pub fn http_get_max(url: &str, max: usize) -> Result<Vec<u8>, String> {
 
 fn request_once(
     host: &str,
+    port: u16,
+    secure: bool,
     path: &str,
     max: usize,
 ) -> Result<(Vec<u8>, u32, Option<String>), String> {
@@ -199,7 +226,7 @@ fn request_once(
     unsafe { WinHttpSetTimeouts(session.0, 8000, 8000, 10000, 20000) };
 
     let host_w = wide(host);
-    let connect = Connect(unsafe { WinHttpConnect(session.0, host_w.as_ptr(), 443, 0) });
+    let connect = Connect(unsafe { WinHttpConnect(session.0, host_w.as_ptr(), port, 0) });
     if connect.0.is_null() {
         return Err(format!("Cannot connect to {host}"));
     }
@@ -215,7 +242,7 @@ fn request_once(
             std::ptr::null(),
             std::ptr::null(),
             std::ptr::null(),
-            FLAG_SECURE,
+            if secure { FLAG_SECURE } else { 0 },
         )
     });
     if request.0.is_null() {
