@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod cloud;
 mod flight;
 mod net;
 mod pages;
@@ -53,14 +54,25 @@ enum NetJob {
     Traffic(traffic::Filter),
     UpdateCheck(String),
     UpdateDownload(update::Release),
+    CloudPush {
+        token: String,
+        gist: String,
+        flights: Vec<FlightRecord>,
+    },
+    CloudPull {
+        token: String,
+        gist: String,
+    },
 }
 
 enum NetDone {
     Briefing(Result<(FlightPlan, simbrief::Briefing), String>),
-    Photo(Result<(egui::ColorImage, &'static str, String), String>),
+    Photo(Result<(egui::ColorImage, &'static str, String, String), String>),
     Traffic(traffic::Fetched),
     UpdateCheck(Result<Option<update::Release>, String>),
     UpdateDownload(Result<std::path::PathBuf, String>),
+    CloudPush(Result<String, String>),
+    CloudPull(Result<Vec<FlightRecord>, String>),
 }
 
 /// Single worker thread for every network request (SimBrief, aircraft photos).
@@ -77,7 +89,7 @@ fn spawn_net() -> (Sender<NetJob>, Receiver<NetDone>) {
                 NetJob::Photo(lookup) => {
                     let result = photo::fetch_photo(&lookup).and_then(|photo| {
                         photo::decode(&photo.bytes)
-                            .map(|image| (image, photo.source, photo.label))
+                            .map(|image| (image, photo.source, photo.label, photo.credit))
                     });
                     let _ = done_tx.send(NetDone::Photo(result));
                 }
@@ -86,6 +98,18 @@ fn spawn_net() -> (Sender<NetJob>, Receiver<NetDone>) {
                 }
                 NetJob::UpdateCheck(url) => {
                     let _ = done_tx.send(NetDone::UpdateCheck(update::check(&url)));
+                }
+                NetJob::CloudPush {
+                    token,
+                    gist,
+                    flights,
+                } => {
+                    let result = cloud::push(&token, &gist, &flights);
+                    let _ = done_tx.send(NetDone::CloudPush(result));
+                }
+                NetJob::CloudPull { token, gist } => {
+                    let result = cloud::pull(&token, &gist);
+                    let _ = done_tx.send(NetDone::CloudPull(result));
                 }
                 NetJob::UpdateDownload(release) => {
                     let _ = done_tx.send(NetDone::UpdateDownload(update::download(&release)));
@@ -108,6 +132,12 @@ pub struct App {
     pub photo_status: String,
     pub photo_source: &'static str,
     pub photo_label: String,
+    pub photo_credit: String,
+    pub confirm_stop: bool,
+    pub allow_exit: bool,
+    pub cloud_status: String,
+    pub cloud_error: String,
+    pub cloud_busy: bool,
     photo_for: String,
     pub traffic: traffic::Traffic,
     pub traffic_filter: traffic::Filter,
@@ -164,6 +194,12 @@ impl App {
             photo_status: String::new(),
             photo_source: "",
             photo_label: String::new(),
+            photo_credit: String::new(),
+            confirm_stop: false,
+            allow_exit: false,
+            cloud_status: String::new(),
+            cloud_error: String::new(),
+            cloud_busy: false,
             photo_for: String::new(),
             traffic: traffic::Traffic::default(),
             traffic_filter: traffic::Filter::default(),
@@ -195,7 +231,7 @@ impl App {
                 "logbook" => Page::Logbook,
                 "stats" => Page::Stats,
                 "settings" => Page::Settings,
-                _ => Page::Dashboard,
+                _ => Page::Map,
             },
             selected: None,
             scrub: 1.0,
@@ -364,7 +400,7 @@ impl App {
 
     pub fn toggle_flight(&mut self) {
         if self.recorder.active {
-            self.stop_flight();
+            self.confirm_stop = true;
         } else {
             self.start_flight();
         }
@@ -381,6 +417,54 @@ impl App {
         self.traffic.loading = true;
         self.traffic_next = Instant::now() + Duration::from_secs(120);
         let _ = self.net_tx.send(NetJob::Traffic(self.traffic_filter.clone()));
+    }
+
+    pub fn push_cloud(&mut self, background: bool) {
+        if self.cloud_busy {
+            return;
+        }
+        self.cloud_busy = true;
+        self.cloud_error.clear();
+        self.cloud_status = if background {
+            "Saving the logbook to GitHub…".to_string()
+        } else {
+            "Uploading the logbook…".to_string()
+        };
+        let token = self.store.settings.github_token.trim().to_string();
+        let gist = self.store.settings.github_gist.trim().to_string();
+        let flights = self.store.flights.clone();
+        let job = NetJob::CloudPush {
+            token,
+            gist,
+            flights,
+        };
+        if self.net_tx.send(job).is_err() {
+            self.cloud_busy = false;
+            self.cloud_error = "The network worker is not running".to_string();
+        }
+    }
+
+    pub fn pull_cloud(&mut self) {
+        if self.cloud_busy {
+            return;
+        }
+        self.cloud_busy = true;
+        self.cloud_error.clear();
+        self.cloud_status = "Downloading the logbook…".to_string();
+        let job = NetJob::CloudPull {
+            token: self.store.settings.github_token.trim().to_string(),
+            gist: self.store.settings.github_gist.trim().to_string(),
+        };
+        if self.net_tx.send(job).is_err() {
+            self.cloud_busy = false;
+            self.cloud_error = "The network worker is not running".to_string();
+        }
+    }
+
+    pub fn open_site(&self) {
+        let _ = std::process::Command::new("cmd")
+            .args(["/C", "start", "", "https://federicofnn.github.io/msfs-flight-tracker/"])
+            .spawn();
     }
 
     pub fn check_updates(&mut self, manual: bool) {
@@ -404,27 +488,6 @@ impl App {
         self.update_state.notes.clear();
         self.update_next = Instant::now() + Duration::from_secs(6 * 60 * 60);
         let _ = self.net_tx.send(NetJob::UpdateCheck(url));
-    }
-
-    /// Runs the downloaded setup once the aircraft is on the ground and no
-    /// flight is being recorded, then closes so the installer can replace it.
-    fn apply_downloaded_update(&mut self, ctx: &egui::Context) {
-        if self.recorder.active {
-            return;
-        }
-        let Some(path) = self.update_state.installer.clone() else {
-            return;
-        };
-        match update::run_installer(&path) {
-            Ok(()) => {
-                self.update_state.status = "Installing the new version…".to_string();
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-            }
-            Err(err) => {
-                self.update_state.error = err;
-                self.update_state.installer = None;
-            }
-        }
     }
 
     pub fn install_update(&mut self) {
@@ -557,7 +620,14 @@ impl App {
             }
         );
         match self.store.add(record) {
-            Ok(_) => self.toast_msg(format!("Flight saved — {label}")),
+            Ok(_) => {
+                self.toast_msg(format!("Flight saved — {label}"));
+                if self.store.settings.sync_auto
+                    && !self.store.settings.github_token.trim().is_empty()
+                {
+                    self.push_cloud(true);
+                }
+            }
             Err(err) => self.toast_err(format!("Could not save the flight: {err}")),
         }
     }
@@ -681,10 +751,10 @@ impl App {
                     match result {
                         Ok(Some(release)) => {
                             self.update_state.status =
-                                format!("Downloading version {}…", release.version);
+                                format!("Version {} is available", release.version);
                             self.update_state.notes = release.notes.clone();
                             self.update_state.available = Some(release);
-                            self.install_update();
+                            self.toast_msg("Update available: open Settings › Updates");
                         }
                         Ok(None) => {
                             self.update_state.status = "You are up to date".to_string();
@@ -699,15 +769,70 @@ impl App {
                     self.update_state.downloading = false;
                     match result {
                         Ok(path) => {
-                            self.update_state.installer = Some(path);
+                            self.update_state.installer = Some(path.clone());
                             self.update_state.status =
-                                "Update downloaded, installing…".to_string();
+                                "Starting the installer…".to_string();
+                            match update::run_installer_ui(&path) {
+                                Ok(()) => {
+                                    self.allow_exit = true;
+                                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                                }
+                                Err(err) => self.update_state.error = err,
+                            }
                         }
                         Err(err) => self.update_state.error = err,
                     }
                 }
+                NetDone::CloudPush(result) => {
+                    self.cloud_busy = false;
+                    match result {
+                        Ok(id) => {
+                            if self.store.settings.github_gist != id {
+                                self.store.settings.github_gist = id;
+                                self.store.save_settings();
+                            }
+                            self.cloud_status = format!(
+                                "{} flights saved on GitHub",
+                                self.store.flights.len()
+                            );
+                        }
+                        Err(err) => {
+                            self.cloud_error = err.clone();
+                            self.cloud_status.clear();
+                            self.toast_err(format!("Cloud sync: {err}"));
+                        }
+                    }
+                }
+                NetDone::CloudPull(result) => {
+                    self.cloud_busy = false;
+                    match result {
+                        Ok(flights) => {
+                            let remote = flights.len();
+                            let mut added = 0;
+                            for record in flights {
+                                if !self
+                                    .store
+                                    .flights
+                                    .iter()
+                                    .any(|existing| existing.id == record.id)
+                                    && self.store.add(record).is_ok()
+                                {
+                                    added += 1;
+                                }
+                            }
+                            self.cloud_status = format!(
+                                "{added} new flights from GitHub ({remote} in the cloud)"
+                            );
+                        }
+                        Err(err) => {
+                            self.cloud_error = err.clone();
+                            self.cloud_status.clear();
+                            self.toast_err(format!("Cloud sync: {err}"));
+                        }
+                    }
+                }
                 NetDone::Photo(result) => match result {
-                    Ok((image, source, label)) => {
+                    Ok((image, source, label, credit)) => {
                         self.photo = Some(ctx.load_texture(
                             "aircraft-photo",
                             image,
@@ -715,6 +840,7 @@ impl App {
                         ));
                         self.photo_source = source;
                         self.photo_label = label;
+                        self.photo_credit = credit;
                         self.photo_status.clear();
                     }
                     Err(err) => {
@@ -925,6 +1051,17 @@ impl App {
                                 theme::RED,
                             );
                         }
+                        if let Some(release) = self.update_state.available.clone() {
+                            ui.add_space(6.0);
+                            if widgets::action_button(
+                                ui,
+                                &format!("UPDATE {}", release.version),
+                                theme::ACCENT,
+                                !self.update_state.downloading,
+                            ) {
+                                self.page = Page::Settings;
+                            }
+                        }
                     });
                 });
             });
@@ -988,9 +1125,15 @@ impl App {
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if ctx.input(|input| input.viewport().close_requested()) && !self.allow_exit {
+            // Closing keeps the tracker alive, so a flight in progress is not lost.
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+            self.toast_msg("Still running in the background");
+        }
         self.pump(ctx);
-        self.apply_downloaded_update(ctx);
         self.handle_dropped_files(ctx);
+        self.stop_confirm(ctx);
         self.shell(ctx);
         self.toast_ui(ctx);
         ctx.request_repaint_after(Duration::from_millis(80));

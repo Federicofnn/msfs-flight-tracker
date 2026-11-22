@@ -1,6 +1,6 @@
 [package]
 name = "msfs-flight-tracker-setup"
-version = "1.4.0"
+version = "1.5.0"
 edition = "2021"
 description = "Installer for MSFS Flight Tracker"
 publish = false
@@ -10,6 +10,8 @@ name = "msfs-flight-tracker-setup"
 path = "src/main.rs"
 
 [dependencies]
+eframe = { version = "0.32", default-features = false, features = ["glow", "default_fonts"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
 
 [profile.release]
 opt-level = "z"

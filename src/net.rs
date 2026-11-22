@@ -184,7 +184,16 @@ pub fn http_get_max(url: &str, max: usize) -> Result<Vec<u8>, String> {
     for _ in 0..4 {
         let endpoint = parse_url(&current)?;
         let (body, status, location) =
-            request_once(&endpoint.host, endpoint.port, endpoint.secure, &endpoint.path, max)?;
+            request_once(
+                &endpoint.host,
+                endpoint.port,
+                endpoint.secure,
+                &endpoint.path,
+                max,
+                "GET",
+                &[],
+                None,
+            )?;
         if (300..400).contains(&status) {
             if let Some(next) = location {
                 current = next;
@@ -208,6 +217,9 @@ fn request_once(
     secure: bool,
     path: &str,
     max: usize,
+    method: &str,
+    extra_headers: &[(&str, String)],
+    body: Option<&[u8]>,
 ) -> Result<(Vec<u8>, u32, Option<String>), String> {
     // Planespotters asks for a descriptive agent with contact information.
     let agent = wide("MSFSFlightTracker/1.0 (+https://github.com/msfs-flight-tracker)");
@@ -231,9 +243,16 @@ fn request_once(
         return Err(format!("Cannot connect to {host}"));
     }
 
-    let verb = wide("GET");
+    let verb = wide(method);
     let path_w = wide(path);
-    let headers = wide("Accept: application/json, image/*\r\n");
+    let mut header_text = String::from("Accept: application/json, image/*\r\n");
+    for (name, value) in extra_headers {
+        header_text.push_str(name);
+        header_text.push_str(": ");
+        header_text.push_str(value);
+        header_text.push_str("\r\n");
+    }
+    let headers = wide(&header_text);
     let request = Request(unsafe {
         WinHttpOpenRequest(
             connect.0,
@@ -249,15 +268,19 @@ fn request_once(
         return Err("WinHttpOpenRequest failed".to_string());
     }
 
+    let (body_ptr, body_len) = match body {
+        Some(bytes) => (bytes.as_ptr() as *mut c_void, bytes.len() as u32),
+        None => (std::ptr::null_mut(), 0),
+    };
     let sent = unsafe {
         WinHttpSendRequest(
             request.0,
             headers.as_ptr(),
             // WinHTTP wants the header length in characters, not bytes.
             headers.len() as u32 - 1,
-            std::ptr::null_mut(),
-            0,
-            0,
+            body_ptr,
+            body_len,
+            body_len,
             0,
         )
     };
@@ -307,6 +330,30 @@ fn request_once(
     }
 
     Ok((body, status, location))
+}
+
+/// Blocking JSON request with a method, extra headers and a body.
+///
+/// Used for the GitHub API, which needs POST/PATCH and an Authorization
+/// header; redirects are not followed because the API answers directly.
+pub fn api_request(
+    method: &str,
+    url: &str,
+    extra_headers: &[(&str, String)],
+    body: Option<&str>,
+) -> Result<(u32, String), String> {
+    let endpoint = parse_url(url)?;
+    let (bytes, status, _) = request_once(
+        &endpoint.host,
+        endpoint.port,
+        endpoint.secure,
+        &endpoint.path,
+        MAX_BODY,
+        method,
+        extra_headers,
+        body.map(|text| text.as_bytes()),
+    )?;
+    Ok((status, String::from_utf8_lossy(&bytes).to_string()))
 }
 
 /// Percent-encodes a query component (spaces, quotes, non-ASCII).

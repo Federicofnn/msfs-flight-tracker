@@ -139,6 +139,8 @@ pub struct Photo {
     pub source: &'static str,
     /// What the photo claims to show, e.g. "ITA Airways · A320".
     pub label: String,
+    /// Attribution line, e.g. "© Jane Doe · CC BY-SA 4.0 · Wikimedia Commons".
+    pub credit: String,
 }
 
 /// Downloads a photo of this exact aircraft.
@@ -327,7 +329,7 @@ fn commons_query(
 ) -> Result<Photo, String> {
     let search = format!("filetype:bitmap {query}");
     let url = format!(
-        "https://commons.wikimedia.org/w/api.php?action=query&format=json&generator=search&gsrsearch={}&gsrnamespace=6&gsrlimit=25&prop=imageinfo&iiprop=url&iiurlwidth=1100",
+        "https://commons.wikimedia.org/w/api.php?action=query&format=json&generator=search&gsrsearch={}&gsrnamespace=6&gsrlimit=25&prop=imageinfo&iiprop=url|extmetadata&iiurlwidth=1100",
         net::encode_component(&search)
     );
     let json = net::get_json(&url)?;
@@ -340,7 +342,7 @@ fn commons_query(
         families.to_vec()
     };
 
-    let mut candidates: Vec<(u32, String)> = Vec::new();
+    let mut candidates: Vec<(u32, String, String)> = Vec::new();
     for page in pages.values() {
         let Some(src) = page["imageinfo"][0]["thumburl"]
             .as_str()
@@ -366,15 +368,20 @@ fn commons_query(
                 continue;
             }
         }
-        candidates.push((page["index"].as_u64().unwrap_or(99) as u32, src.to_string()));
+        candidates.push((
+            page["index"].as_u64().unwrap_or(99) as u32,
+            src.to_string(),
+            commons_credit(&page["imageinfo"][0]["extmetadata"]),
+        ));
     }
     candidates.sort();
-    for (_, src) in candidates {
+    for (_, src, credit) in candidates {
         if let Ok(bytes) = net::http_get(&src) {
             return Ok(Photo {
                 bytes,
                 source: "WIKIMEDIA",
                 label: query.to_string(),
+                credit,
             });
         }
     }
@@ -396,14 +403,57 @@ fn planespotters(registration: &str) -> Result<Photo, String> {
             .as_str()
             .or_else(|| photo["thumbnail"]["src"].as_str());
         if let Some(src) = src {
+            let photographer = photo["photographer"].as_str().unwrap_or_default().trim();
+            let credit = if photographer.is_empty() {
+                "© Planespotters.net".to_string()
+            } else {
+                format!("© {photographer} · Planespotters.net")
+            };
             return net::http_get(src).map(|bytes| Photo {
                 bytes,
                 source: "PLANESPOTTERS",
                 label: registration.to_string(),
+                credit,
             });
         }
     }
     Err(format!("No photo of {registration}"))
+}
+
+/// Pulls the author and licence out of a Commons file, so the photo is
+/// attributed instead of copied without credit.
+fn commons_credit(metadata: &serde_json::Value) -> String {
+    let artist = strip_html(metadata["Artist"]["value"].as_str().unwrap_or_default());
+    let licence = strip_html(metadata["LicenseShortName"]["value"].as_str().unwrap_or_default());
+    let mut parts = Vec::new();
+    if !artist.is_empty() {
+        parts.push(format!("© {artist}"));
+    }
+    if !licence.is_empty() {
+        parts.push(licence);
+    }
+    parts.push("Wikimedia Commons".to_string());
+    parts.join(" · ")
+}
+
+fn strip_html(value: &str) -> String {
+    let mut out = String::new();
+    let mut inside = false;
+    for c in value.chars() {
+        match c {
+            '<' => inside = true,
+            '>' => inside = false,
+            _ if !inside => out.push(c),
+            _ => {}
+        }
+    }
+    out.replace("&amp;", "&")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&nbsp;", " ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Word-sequence match so "ITA" never matches inside "Capital".

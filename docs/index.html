@@ -1,0 +1,455 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>MSFS Flight Tracker · Logbook</title>
+<meta name="description" content="Il tuo logbook di MSFS Flight Tracker, letto dal tuo GitHub gist." />
+<style>
+  :root {
+    --bg: #090708;
+    --bg-soft: #0e0b0d;
+    --card: #141113;
+    --card-2: #1a1518;
+    --border: #38282c;
+    --text: #f5eeee;
+    --muted: #ae989b;
+    --dim: #7a6468;
+    --accent: #ee424e;
+    --green: #66d69a;
+    --amber: #ffa05c;
+    --mono: ui-monospace, "Cascadia Mono", "SF Mono", Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    background:
+      radial-gradient(1100px 500px at 12% -10%, #2a1216 0%, transparent 60%),
+      radial-gradient(900px 420px at 100% 0%, #1b0f12 0%, transparent 55%),
+      var(--bg);
+    color: var(--text);
+    font-family: "Barlow", "Segoe UI", system-ui, -apple-system, sans-serif;
+    font-size: 15px;
+    line-height: 1.5;
+    min-height: 100vh;
+  }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .wrap { width: min(1080px, calc(100% - 40px)); margin: 0 auto; padding: 28px 0 56px; }
+
+  header.top { display: flex; align-items: center; gap: 14px; padding-bottom: 22px; border-bottom: 1px solid var(--border); }
+  .logo {
+    width: 46px; height: 46px; border-radius: 12px; flex: 0 0 auto;
+    background: #000; border: 1px solid var(--border);
+    display: grid; place-items: center; position: relative;
+    box-shadow: inset 0 0 0 1px #000, 0 0 26px rgba(238, 66, 78, .16);
+  }
+  .logo span { font-weight: 700; font-size: 24px; color: var(--accent); line-height: 1; transform: translateY(-1px); }
+  .logo::after {
+    content: ""; position: absolute; inset: 6px; border-radius: 50%;
+    border: 1px solid rgba(238, 66, 78, .35); transform: rotate(-24deg) scaleY(.42);
+  }
+  .brand { display: flex; flex-direction: column; }
+  .brand b { font-size: 17px; letter-spacing: .1em; font-weight: 600; }
+  .brand small { font-size: 9px; letter-spacing: .22em; color: var(--muted); font-weight: 600; }
+  .top .right { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+
+  .btn {
+    appearance: none; border: 1px solid transparent; border-radius: 10px;
+    background: var(--accent); color: #fff; font: inherit; font-weight: 600;
+    font-size: 12.5px; letter-spacing: .04em; padding: 10px 16px; cursor: pointer;
+    transition: filter .15s ease, background .15s ease;
+  }
+  .btn:hover { filter: brightness(1.08); }
+  .btn.ghost { background: #221a1d; color: var(--muted); border-color: var(--border); }
+  .btn.ghost:hover { background: #2a2023; color: var(--text); }
+  .btn:disabled { opacity: .55; cursor: default; }
+
+  .panel {
+    background: linear-gradient(180deg, var(--card) 0%, var(--bg-soft) 100%);
+    border: 1px solid var(--border); border-radius: 16px; padding: 22px;
+  }
+
+  /* login */
+  .login { max-width: 560px; margin: 56px auto; }
+  .login h1 { font-size: 26px; margin: 0 0 6px; letter-spacing: -.01em; }
+  .login p { color: var(--muted); font-size: 13px; margin: 0 0 20px; }
+  .field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
+  .field label { font-size: 9px; letter-spacing: .2em; color: var(--muted); font-weight: 600; }
+  .field input {
+    background: #0c0a0b; border: 1px solid var(--border); border-radius: 10px;
+    color: var(--text); font: inherit; font-size: 13px; padding: 11px 12px;
+  }
+  .field input:focus { outline: none; border-color: var(--accent); }
+  .hint { font-size: 11.5px; color: var(--dim); }
+  .error { color: #ff8c8c; font-size: 12.5px; margin-top: 10px; }
+
+  /* stats */
+  .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin: 22px 0; }
+  .stat { background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 16px 18px; }
+  .stat .k { font-size: 9px; letter-spacing: .2em; color: var(--dim); font-weight: 600; }
+  .stat .v { font-size: 26px; font-weight: 600; margin-top: 4px; letter-spacing: -.02em; }
+  .stat .v small { font-size: 12px; color: var(--muted); font-weight: 500; letter-spacing: 0; }
+
+  /* chart */
+  .chart { margin: 0 0 22px; }
+  .chart h2, .list h2 { font-size: 11px; letter-spacing: .2em; color: var(--muted); margin: 0 0 14px; font-weight: 600; }
+  .bars { display: flex; align-items: flex-end; gap: 8px; height: 130px; }
+  .bar { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; gap: 7px; height: 100%; }
+  .bar .fill { width: 100%; border-radius: 5px 5px 2px 2px; background: linear-gradient(180deg, var(--accent), #7d1f27); min-height: 2px; }
+  .bar .lbl { font-size: 9.5px; color: var(--dim); letter-spacing: .08em; }
+  .bar .amt { font-size: 9.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+  /* table */
+  .toolbar { display: flex; gap: 10px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
+  .toolbar input { flex: 1 1 220px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  thead th {
+    text-align: left; font-size: 9px; letter-spacing: .18em; color: var(--dim);
+    font-weight: 600; padding: 0 10px 10px; border-bottom: 1px solid var(--border); white-space: nowrap;
+  }
+  tbody td { padding: 11px 10px; border-bottom: 1px solid #221a1d; vertical-align: top; }
+  tbody tr:hover td { background: #191316; }
+  .route { font-weight: 600; letter-spacing: .02em; white-space: nowrap; }
+  .route span { color: var(--dim); margin: 0 6px; }
+  .sub { color: var(--dim); font-size: 11px; }
+  .num { font-family: var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .fpm.good { color: var(--green); }
+  .fpm.bad { color: var(--amber); }
+  .empty { color: var(--dim); text-align: center; padding: 40px 10px; }
+  .foot { margin-top: 26px; font-size: 11px; color: var(--dim); display: flex; gap: 18px; flex-wrap: wrap; }
+  .pill { font-size: 9px; letter-spacing: .16em; font-weight: 600; padding: 5px 9px; border-radius: 999px; border: 1px solid var(--border); color: var(--muted); }
+  .pill.live { color: var(--green); border-color: #24513a; background: #10231a; }
+  .hidden { display: none !important; }
+  @media (max-width: 760px) {
+    .stats { grid-template-columns: repeat(2, 1fr); }
+    .brand b { font-size: 14px; }
+    table { font-size: 12px; }
+    thead th:nth-child(5), tbody td:nth-child(5) { display: none; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <div class="logo"><span>F</span></div>
+    <div class="brand">
+      <b>MSFS FLIGHT TRACKER</b>
+      <small>LOGBOOK</small>
+    </div>
+    <div class="right">
+      <span id="statusPill" class="pill">NON CONNESSO</span>
+      <button id="refreshBtn" class="btn ghost hidden" type="button">Aggiorna</button>
+      <button id="signOutBtn" class="btn ghost hidden" type="button">Esci</button>
+    </div>
+  </header>
+
+  <section id="loginView" class="panel login hidden">
+    <h1>Collega il tuo logbook</h1>
+    <p>
+      Il sito legge il logbook dal tuo gist GitHub: nessun account da creare qui e nessun
+      dato su server nostri. Crea un token <b>classic</b> con il permesso <b>gist</b>
+      (<a href="https://github.com/settings/tokens/new?scopes=gist&amp;description=MSFS%20Flight%20Tracker%20logbook" target="_blank" rel="noopener">crealo ora</a>),
+      poi incollalo qui sotto insieme all'ID del gist.
+    </p>
+    <div class="field">
+      <label for="token">GITHUB TOKEN</label>
+      <input id="token" type="password" autocomplete="off" spellcheck="false" placeholder="ghp_… oppure github_pat_…" />
+    </div>
+    <div class="field">
+      <label for="gist">GIST ID</label>
+      <input id="gist" type="text" autocomplete="off" spellcheck="false" placeholder="es. 3f2b9c…" />
+    </div>
+    <button id="connectBtn" class="btn" type="button">Accedi con GitHub</button>
+    <div id="loginError" class="error hidden"></div>
+    <p class="hint" style="margin-top:16px">
+      Il token resta solo in questo browser (localStorage). Puoi anche aprire il sito con
+      <code>?gist=ID</code> per un gist pubblico, senza token.
+    </p>
+  </section>
+
+  <main id="board" class="hidden">
+    <div class="stats">
+      <div class="stat"><div class="k">VOLI</div><div class="v" id="sFlights">0</div></div>
+      <div class="stat"><div class="k">ORE DI VOLO</div><div class="v" id="sHours">0<small>h</small></div></div>
+      <div class="stat"><div class="k">DISTANZA</div><div class="v" id="sNm">0<small>nm</small></div></div>
+      <div class="stat"><div class="k">MIGLIOR ATTERRAGGIO</div><div class="v" id="sFpm">—</div></div>
+    </div>
+
+    <section class="panel chart">
+      <h2>ULTIMI 12 MESI · ORE DI VOLO</h2>
+      <div class="bars" id="bars"></div>
+    </section>
+
+    <section class="panel list">
+      <h2>VOLI</h2>
+      <div class="toolbar">
+        <input id="search" class="field" type="search" placeholder="Cerca rotta, aereo, data…" style="background:#0c0a0b;border:1px solid var(--border);border-radius:10px;color:var(--text);font:inherit;font-size:13px;padding:10px 12px" />
+        <button id="csvBtn" class="btn ghost" type="button">CSV</button>
+      </div>
+      <div style="overflow-x:auto">
+        <table>
+          <thead>
+            <tr>
+              <th>DATA</th><th>ROTTA</th><th>AEREO</th><th>DURATA</th><th>DISTANZA</th><th>ATTERRAGGIO</th>
+            </tr>
+          </thead>
+          <tbody id="rows"></tbody>
+        </table>
+      </div>
+      <div id="empty" class="empty hidden">Nessun volo nel logbook.</div>
+    </section>
+
+    <div class="foot">
+      <span id="updated"></span>
+      <a id="gistLink" href="#" target="_blank" rel="noopener">Apri il gist su GitHub</a>
+      <a href="https://github.com/Federicofnn/msfs-flight-tracker" target="_blank" rel="noopener">MSFS Flight Tracker</a>
+    </div>
+  </main>
+</div>
+
+<script>
+(() => {
+  const FILE = "msfs-logbook.json";
+  const $ = (id) => document.getElementById(id);
+  const state = {
+    token: localStorage.getItem("mft_token") || "",
+    gist: new URLSearchParams(location.search).get("gist") || localStorage.getItem("mft_gist") || "",
+    flights: [],
+    updated: 0,
+    query: "",
+  };
+
+  const num = (v, digits = 0) => {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return "—";
+    return n.toLocaleString("it-IT", { minimumFractionDigits: digits, maximumFractionDigits: digits });
+  };
+  const dur = (seconds) => {
+    const s = Math.max(0, Number(seconds) || 0);
+    const h = Math.floor(s / 3600);
+    const m = Math.round((s % 3600) / 60);
+    return h > 0 ? `${h}h ${String(m).padStart(2, "0")}m` : `${m}m`;
+  };
+  const date = (epoch) => {
+    const d = new Date((Number(epoch) || 0) * 1000);
+    return d.toLocaleDateString("it-IT", { day: "2-digit", month: "short", year: "numeric" });
+  };
+  const esc = (text) => String(text ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+  function setStatus(text, live = false) {
+    const pill = $("statusPill");
+    pill.textContent = text;
+    pill.className = "pill" + (live ? " live" : "");
+  }
+
+  function showLogin(message) {
+    $("loginView").classList.remove("hidden");
+    $("board").classList.add("hidden");
+    $("refreshBtn").classList.add("hidden");
+    $("signOutBtn").classList.add("hidden");
+    $("token").value = state.token;
+    $("gist").value = state.gist;
+    const box = $("loginError");
+    if (message) { box.textContent = message; box.classList.remove("hidden"); }
+    else box.classList.add("hidden");
+    setStatus("NON CONNESSO");
+  }
+
+  function showBoard() {
+    $("loginView").classList.add("hidden");
+    $("board").classList.remove("hidden");
+    $("refreshBtn").classList.remove("hidden");
+    $("signOutBtn").classList.remove("hidden");
+    setStatus("LOGBOOK CARICATO", true);
+  }
+
+  async function readGist() {
+    const headers = { Accept: "application/vnd.github+json" };
+    if (state.token) headers.Authorization = `Bearer ${state.token}`;
+    const res = await fetch(`https://api.github.com/gists/${encodeURIComponent(state.gist)}`, { headers });
+    if (res.status === 401) throw new Error("GitHub ha rifiutato il token (401). Creane uno nuovo con il permesso gist.");
+    if (res.status === 404) throw new Error("Gist non trovato (404): controlla l'ID o i permessi del token.");
+    if (!res.ok) throw new Error(`GitHub ha risposto ${res.status}.`);
+    const data = await res.json();
+    const file = data.files && data.files[FILE];
+    if (!file) throw new Error(`Il gist non contiene ${FILE}. Carica il logbook dall'app.`);
+    let content = file.content || "";
+    if (file.truncated && file.raw_url) {
+      const raw = await fetch(file.raw_url, { headers });
+      if (!raw.ok) throw new Error("Il logbook è troppo grande e GitHub non ha dato il contenuto completo.");
+      content = await raw.text();
+    }
+    const parsed = JSON.parse(content);
+    state.flights = Array.isArray(parsed) ? parsed : (parsed.flights || []);
+    state.updated = Number(parsed.updated) || 0;
+  }
+
+  function render() {
+    const flights = [...state.flights].sort((a, b) => (b.started || 0) - (a.started || 0));
+    const totalSeconds = flights.reduce((sum, f) => sum + (Number(f.duration_s) || 0), 0);
+    const totalNm = flights.reduce((sum, f) => sum + (Number(f.distance_nm) || 0), 0);
+    const landings = flights.filter((f) => f.landing && Number.isFinite(Number(f.landing.fpm)));
+    const best = landings.reduce((best, f) => {
+      const fpm = Math.abs(Number(f.landing.fpm));
+      return best === null || fpm < best ? fpm : best;
+    }, null);
+
+    $("sFlights").textContent = num(flights.length);
+    $("sHours").innerHTML = `${num(totalSeconds / 3600, 1)}<small>h</small>`;
+    $("sNm").innerHTML = `${num(totalNm)}<small>nm</small>`;
+    $("sFpm").innerHTML = best === null ? "—" : `${num(best)}<small>fpm</small>`;
+
+    renderBars(flights);
+    renderRows(flights);
+    $("updated").textContent = state.updated
+      ? `Ultimo aggiornamento: ${new Date(state.updated * 1000).toLocaleString("it-IT")}`
+      : "";
+    $("gistLink").href = `https://gist.github.com/${state.gist}`;
+  }
+
+  function renderBars(flights) {
+    const bars = $("bars");
+    bars.innerHTML = "";
+    const now = new Date();
+    const months = [];
+    for (let i = 11; i >= 0; i--) {
+      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      months.push({ key: `${d.getFullYear()}-${d.getMonth()}`, label: d.toLocaleDateString("it-IT", { month: "short" }), hours: 0 });
+    }
+    const index = new Map(months.map((m, i) => [m.key, i]));
+    for (const f of flights) {
+      const d = new Date((Number(f.started) || 0) * 1000);
+      const slot = index.get(`${d.getFullYear()}-${d.getMonth()}`);
+      if (slot !== undefined) months[slot].hours += (Number(f.duration_s) || 0) / 3600;
+    }
+    const max = Math.max(1, ...months.map((m) => m.hours));
+    for (const month of months) {
+      const el = document.createElement("div");
+      el.className = "bar";
+      el.innerHTML =
+        `<div class="amt">${month.hours > 0 ? num(month.hours, 1) + "h" : ""}</div>` +
+        `<div class="fill" style="height:${Math.max(2, (month.hours / max) * 100)}%"></div>` +
+        `<div class="lbl">${month.label.toUpperCase()}</div>`;
+      el.title = `${month.label}: ${num(month.hours, 1)} h`;
+      bars.appendChild(el);
+    }
+  }
+
+  function renderRows(flights) {
+    const query = state.query.trim().toLowerCase();
+    const visible = query
+      ? flights.filter((f) =>
+          [f.origin, f.dest, f.aircraft, f.plan_title, date(f.started)]
+            .join(" ")
+            .toLowerCase()
+            .includes(query))
+      : flights;
+    const rows = $("rows");
+    rows.innerHTML = visible.map((f) => {
+      const fpm = f.landing ? Math.abs(Number(f.landing.fpm)) : null;
+      const cls = fpm === null ? "" : fpm < 200 ? "good" : fpm > 600 ? "bad" : "";
+      const route = f.origin || f.dest
+        ? `${esc(f.origin || "—")}<span>→</span>${esc(f.dest || "—")}`
+        : "Volo libero";
+      return `<tr>
+        <td class="num">${date(f.started)}</td>
+        <td><div class="route">${route}</div><div class="sub">${esc(f.plan_title || "")}</div></td>
+        <td>${esc(f.aircraft || "—")}</td>
+        <td class="num">${dur(f.duration_s)}</td>
+        <td class="num">${num(f.distance_nm)} nm</td>
+        <td class="num fpm ${cls}">${fpm === null ? "—" : num(fpm) + " fpm"}</td>
+      </tr>`;
+    }).join("");
+    $("empty").classList.toggle("hidden", visible.length > 0);
+  }
+
+  function downloadCsv() {
+    const header = ["data", "origine", "destinazione", "aereo", "durata_s", "distanza_nm", "atterraggio_fpm"];
+    const lines = state.flights
+      .slice()
+      .sort((a, b) => (a.started || 0) - (b.started || 0))
+      .map((f) => [
+        new Date((Number(f.started) || 0) * 1000).toISOString(),
+        f.origin || "",
+        f.dest || "",
+        f.aircraft || "",
+        Math.round(Number(f.duration_s) || 0),
+        Math.round(Number(f.distance_nm) || 0),
+        f.landing ? Math.round(Math.abs(Number(f.landing.fpm))) : "",
+      ]);
+    const csv = [header, ...lines]
+      .map((row) => row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(","))
+      .join("\n");
+    const url = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "msfs-logbook.csv";
+    link.click();
+    URL.revokeObjectURL(url);
+  }
+
+  async function connect() {
+    const token = $("token").value.trim();
+    const gist = $("gist").value.trim();
+    if (!gist) { showLogin("Incolla l'ID del gist creato dall'app."); return; }
+    state.token = token;
+    state.gist = gist;
+    localStorage.setItem("mft_token", token);
+    localStorage.setItem("mft_gist", gist);
+    const button = $("connectBtn");
+    button.disabled = true;
+    button.textContent = "Carico…";
+    try {
+      await readGist();
+      showBoard();
+      render();
+    } catch (err) {
+      showLogin(err.message);
+    } finally {
+      button.disabled = false;
+      button.textContent = "Accedi con GitHub";
+    }
+  }
+
+  async function refresh() {
+    const button = $("refreshBtn");
+    button.disabled = true;
+    try {
+      await readGist();
+      render();
+    } catch (err) {
+      showLogin(err.message);
+    } finally {
+      button.disabled = false;
+    }
+  }
+
+  $("connectBtn").addEventListener("click", connect);
+  $("refreshBtn").addEventListener("click", refresh);
+  $("csvBtn").addEventListener("click", downloadCsv);
+  $("search").addEventListener("input", (event) => {
+    state.query = event.target.value;
+    renderRows(state.flights.slice());
+  });
+  $("signOutBtn").addEventListener("click", () => {
+    localStorage.removeItem("mft_token");
+    localStorage.removeItem("mft_gist");
+    state.token = "";
+    state.gist = "";
+    state.flights = [];
+    showLogin();
+  });
+  ["token", "gist"].forEach((id) =>
+    $(id).addEventListener("keydown", (event) => { if (event.key === "Enter") connect(); })
+  );
+
+  if (state.gist) {
+    connect();
+  } else {
+    showLogin();
+  }
+})();
+</script>
+</body>
+</html>

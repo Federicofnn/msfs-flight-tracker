@@ -1175,6 +1175,17 @@ impl App {
                     } else {
                         ("START FLIGHT", ACCENT)
                     };
+                    if let Some(release) = self.update_state.available.clone() {
+                        if widgets::action_button(
+                            ui,
+                            &format!("UPDATE {}", release.version),
+                            ACCENT,
+                            !self.update_state.downloading,
+                        ) {
+                            goto = Some(Page::Settings);
+                        }
+                        ui.add_space(6.0);
+                    }
                     if widgets::action_button(ui, label, color, can_fly) {
                         toggle_flight = true;
                     }
@@ -1308,6 +1319,9 @@ impl App {
                     .size(8.0)
                     .color(DIM),
                 );
+                if !self.photo_credit.is_empty() {
+                    ui.label(RichText::new(&self.photo_credit).size(7.5).color(DIM));
+                }
             } else if photo_status == "loading" {
                 ui.add_space(10.0);
                 ui.label(RichText::new("Fetching the aircraft photo…").size(10.0).color(DIM));
@@ -2516,6 +2530,65 @@ impl App {
         }
     }
 
+    /// STOP asks first: ending a flight cannot be undone.
+    pub fn stop_confirm(&mut self, ctx: &egui::Context) {
+        if !self.confirm_stop {
+            return;
+        }
+        let mut choice: Option<bool> = None;
+        egui::Window::new("stop-flight-confirm")
+            .id(egui::Id::new("stop-flight-confirm"))
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .title_bar(false)
+            .resizable(false)
+            .collapsible(false)
+            .frame(
+                egui::Frame::new()
+                    .fill(CARD)
+                    .stroke(egui::Stroke::new(1.0_f32, BORDER))
+                    .corner_radius(CornerRadius::same(18))
+                    .inner_margin(egui::Margin::same(22)),
+            )
+            .show(ctx, |ui| {
+                ui.set_width(360.0);
+                ui.label(RichText::new("END THE FLIGHT?").size(8.5).color(ACCENT).strong());
+                ui.add_space(5.0);
+                ui.label(
+                    RichText::new("The flight will be saved to the logbook")
+                        .size(16.0)
+                        .color(TEXT)
+                        .strong(),
+                );
+                ui.add_space(6.0);
+                ui.label(
+                    RichText::new(format!(
+                        "{} of flight time will be written to the logbook, with the route and the landing. This cannot be undone.",
+                        fmt_clock(self.recorder.elapsed())
+                    ))
+                    .size(11.0)
+                    .color(MUTED),
+                );
+                ui.add_space(16.0);
+                ui.horizontal(|ui| {
+                    if widgets::action_button(ui, "END & SAVE", RED, true) {
+                        choice = Some(true);
+                    }
+                    ui.add_space(8.0);
+                    if widgets::action_button(ui, "KEEP FLYING", MUTED, true) {
+                        choice = Some(false);
+                    }
+                });
+            });
+        match choice {
+            Some(true) => {
+                self.confirm_stop = false;
+                self.stop_flight();
+            }
+            Some(false) => self.confirm_stop = false,
+            None => {}
+        }
+    }
+
     pub fn settings_page(&mut self, ui: &mut Ui) {
         ui.label(RichText::new("Settings").size(21.0).strong().color(TEXT));
         ui.add_space(12.0);
@@ -2720,6 +2793,97 @@ impl App {
         });
 
         ui.add_space(12.0);
+        card(ui, "Cloud logbook (GitHub)", |ui| {
+            let mut changed = false;
+            ui.label(
+                RichText::new(
+                    "The same logbook here and on the website. Flights are stored in a private \
+                     gist of your GitHub account, so nothing passes through a server of ours.",
+                )
+                .size(10.5)
+                .color(DIM),
+            );
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("GitHub token").size(11.5).color(MUTED));
+                if ui
+                    .add(
+                        egui::TextEdit::singleline(&mut self.store.settings.github_token)
+                            .password(true)
+                            .desired_width(300.0)
+                            .hint_text("classic token with the gist scope"),
+                    )
+                    .changed()
+                {
+                    changed = true;
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Gist ID").size(11.5).color(MUTED));
+                if ui
+                    .add(
+                        egui::TextEdit::singleline(&mut self.store.settings.github_gist)
+                            .desired_width(300.0)
+                            .hint_text("created by the first upload"),
+                    )
+                    .changed()
+                {
+                    changed = true;
+                }
+            });
+            if ui
+                .checkbox(
+                    &mut self.store.settings.sync_auto,
+                    "Upload the logbook after every saved flight",
+                )
+                .changed()
+            {
+                changed = true;
+            }
+            if changed {
+                self.store.save_settings();
+            }
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                if ui
+                    .add_enabled(
+                        !self.cloud_busy,
+                        egui::Button::new(if self.cloud_busy {
+                            "Working…"
+                        } else {
+                            "Upload logbook"
+                        }),
+                    )
+                    .clicked()
+                {
+                    self.push_cloud(false);
+                }
+                if ui
+                    .add_enabled(!self.cloud_busy, egui::Button::new("Download logbook"))
+                    .clicked()
+                {
+                    self.pull_cloud();
+                }
+                if ui.button("Open the website").clicked() {
+                    self.open_site();
+                }
+            });
+            if !self.cloud_status.is_empty() {
+                ui.label(RichText::new(&self.cloud_status).size(10.5).color(MUTED));
+            }
+            if !self.cloud_error.is_empty() {
+                ui.label(RichText::new(&self.cloud_error).size(10.5).color(RED));
+            }
+            ui.label(
+                RichText::new(
+                    "Token: github.com/settings/tokens → classic token with the gist scope. It \
+                     stays in %APPDATA%\\MSFSFlightTracker\\settings.json, never in the cloud.",
+                )
+                .size(9.5)
+                .color(DIM),
+            );
+        });
+
         card(ui, "Updates", |ui| {
             let mut changed = false;
             if ui
@@ -2752,7 +2916,7 @@ impl App {
                 let label = if self.update_state.checking {
                     "Checking…"
                 } else {
-                    "Check now"
+                    "Verify updates"
                 };
                 if ui
                     .add_enabled(
@@ -2765,9 +2929,9 @@ impl App {
                 }
                 if let Some(release) = self.update_state.available.clone() {
                     let label = if self.update_state.downloading {
-                        format!("Installing {}…", release.version)
+                        format!("Downloading {}…", release.version)
                     } else {
-                        format!("Install {}", release.version)
+                        format!("Download and install {}", release.version)
                     };
                     if ui
                         .add_enabled(!self.update_state.downloading, egui::Button::new(label))
@@ -2805,8 +2969,7 @@ impl App {
             }
             ui.label(
                 RichText::new(format!(
-                    "Leave the address empty to use the official channel. New versions \
-                     install themselves from: {}",
+                    "Leave the address empty to use the official channel. Nothing installs on its own: you are told when a version is ready, and the setup asks before it replaces anything. Updates come from: {}",
                     update::DEFAULT_MANIFEST
                 ))
                 .size(10.5)

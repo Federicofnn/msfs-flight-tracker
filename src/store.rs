@@ -17,6 +17,11 @@ pub struct Settings {
     pub photo_query: String,
     pub check_updates: bool,
     pub update_url: String,
+    /// GitHub token with the gist permission, used only for the logbook sync.
+    pub github_token: String,
+    /// The logbook gist; empty until the first upload.
+    pub github_gist: String,
+    pub sync_auto: bool,
 }
 
 impl Default for Settings {
@@ -31,6 +36,9 @@ impl Default for Settings {
             photo_query: String::new(),
             check_updates: true,
             update_url: String::new(),
+            github_token: String::new(),
+            github_gist: String::new(),
+            sync_auto: false,
         }
     }
 }

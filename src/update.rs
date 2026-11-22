@@ -109,9 +109,10 @@ pub fn download(release: &Release) -> Result<PathBuf, String> {
 }
 
 /// Starts the setup. `/S` installs silently, replacing the running app.
-pub fn run_installer(path: &std::path::Path) -> Result<(), String> {
+/// Opens the installer window, so the update is something the pilot agrees to
+/// and watches instead of a silent overwrite.
+pub fn run_installer_ui(path: &std::path::Path) -> Result<(), String> {
     std::process::Command::new(path)
-        .arg("/S")
         .spawn()
         .map(|_| ())
         .map_err(|e| format!("Cannot start the installer: {e}"))
