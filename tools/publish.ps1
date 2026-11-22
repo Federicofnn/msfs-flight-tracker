@@ -32,8 +32,8 @@ if ($pending) {
 }
 
 $assets = @("dist/MSFSFlightTracker-Setup-$version.exe", "dist/release/latest.json")
-$exists = gh release view $tag --json tagName 2>$null
-if ($LASTEXITCODE -eq 0) {
+$known = gh release list --limit 100 --json tagName --jq '.[].tagName'
+if ($known -contains $tag) {
     gh release upload $tag @assets --clobber
 } else {
     gh release create $tag @assets --title "MSFS Flight Tracker $version" --notes $Notes
