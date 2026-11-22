@@ -1,0 +1,10 @@
+/target/
+/installer/target/
+/dist/*.exe
+/dist/release/
+/shots/
+/data/
+/MSFS-Tablet-Tracker.exe
+/map.png
+/plan_simbrief.png
+/screenshot.png

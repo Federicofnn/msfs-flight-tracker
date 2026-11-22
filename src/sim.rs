@@ -1,0 +1,577 @@
+//! Hand-written, zero-dependency SimConnect bindings.
+//!
+//! SimConnect.dll is loaded at runtime, so the app never fails to start when
+//! the simulator (or the DLL) is missing: the worker thread retries and the UI
+//! reports the state. Only a handful of the C API entry points are needed.
+
+use std::ffi::{c_void, CString};
+use std::sync::mpsc::Sender;
+use std::time::{Duration, Instant};
+
+type Handle = *mut c_void;
+
+#[link(name = "kernel32")]
+extern "system" {
+    fn LoadLibraryW(file: *const u16) -> *mut c_void;
+    fn GetProcAddress(module: *mut c_void, name: *const u8) -> *mut c_void;
+}
+
+type FnOpen =
+    unsafe extern "system" fn(*mut Handle, *const u8, *mut c_void, u32, *mut c_void, u32) -> i32;
+type FnClose = unsafe extern "system" fn(Handle) -> i32;
+type FnAdd = unsafe extern "system" fn(Handle, u32, *const u8, *const u8, u32, f32, u32) -> i32;
+type FnRequest =
+    unsafe extern "system" fn(Handle, u32, u32, u32, u32, u32, u32, u32, u32) -> i32;
+type FnNext = unsafe extern "system" fn(Handle, *mut *mut u8, *mut u32) -> i32;
+
+struct Api {
+    open: FnOpen,
+    close: FnClose,
+    add: FnAdd,
+    request: FnRequest,
+    next: FnNext,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Ty {
+    F64,
+    I32,
+    Str,
+}
+
+pub struct Field {
+    pub name: &'static str,
+    pub units: &'static str,
+    pub ty: Ty,
+}
+
+/// Every datum is requested once, in this order; the decoder walks the same
+/// table so offsets stay in sync automatically.
+pub const FIELDS: &[Field] = &[
+    Field { name: "PLANE LATITUDE", units: "degrees", ty: Ty::F64 },              // 0
+    Field { name: "PLANE LONGITUDE", units: "degrees", ty: Ty::F64 },             // 1
+    Field { name: "PLANE ALTITUDE", units: "feet", ty: Ty::F64 },                 // 2
+    Field { name: "PLANE ALT ABOVE GROUND", units: "feet", ty: Ty::F64 },         // 3
+    Field { name: "INDICATED ALTITUDE", units: "feet", ty: Ty::F64 },             // 4
+    Field { name: "AIRSPEED INDICATED", units: "knots", ty: Ty::F64 },            // 5
+    Field { name: "AIRSPEED TRUE", units: "knots", ty: Ty::F64 },                 // 6
+    Field { name: "GROUND VELOCITY", units: "knots", ty: Ty::F64 },               // 7
+    Field { name: "VERTICAL SPEED", units: "feet per minute", ty: Ty::F64 },      // 8
+    Field { name: "PLANE HEADING DEGREES MAGNETIC", units: "degrees", ty: Ty::F64 }, // 9
+    Field { name: "PLANE HEADING DEGREES TRUE", units: "degrees", ty: Ty::F64 },  // 10
+    Field { name: "PLANE PITCH DEGREES", units: "degrees", ty: Ty::F64 },         // 11
+    Field { name: "PLANE BANK DEGREES", units: "degrees", ty: Ty::F64 },          // 12
+    Field { name: "SIM ON GROUND", units: "bool", ty: Ty::I32 },                  // 13
+    Field { name: "AMBIENT WIND DIRECTION", units: "degrees", ty: Ty::F64 },      // 14
+    Field { name: "AMBIENT WIND VELOCITY", units: "knots", ty: Ty::F64 },         // 15
+    Field { name: "AMBIENT TEMPERATURE", units: "celsius", ty: Ty::F64 },         // 16
+    Field { name: "FUEL TOTAL QUANTITY WEIGHT", units: "pounds", ty: Ty::F64 },   // 17
+    Field { name: "GEAR HANDLE POSITION", units: "bool", ty: Ty::I32 },           // 18
+    Field { name: "GEAR TOTAL PCT EXTENDED", units: "percent", ty: Ty::F64 },     // 19
+    Field { name: "FLAPS HANDLE PERCENT", units: "percent", ty: Ty::F64 },        // 20
+    Field { name: "BRAKE PARKING INDICATOR", units: "bool", ty: Ty::I32 },        // 21
+    Field { name: "AUTOPILOT MASTER", units: "bool", ty: Ty::I32 },               // 22
+    Field { name: "ENGINE COMBUSTION:1", units: "bool", ty: Ty::I32 },            // 23
+    Field { name: "G FORCE", units: "GForce", ty: Ty::F64 },                      // 24
+    Field { name: "PLANE TOUCHDOWN NORMAL VELOCITY", units: "feet per second", ty: Ty::F64 }, // 25
+    Field { name: "PLANE TOUCHDOWN BANK DEGREES", units: "degrees", ty: Ty::F64 },    // 26
+    Field { name: "PLANE TOUCHDOWN PITCH DEGREES", units: "degrees", ty: Ty::F64 },   // 27
+    Field { name: "PLANE TOUCHDOWN HEADING DEGREES TRUE", units: "degrees", ty: Ty::F64 }, // 28
+    Field { name: "PLANE TOUCHDOWN LATITUDE", units: "radians", ty: Ty::F64 },     // 29
+    Field { name: "PLANE TOUCHDOWN LONGITUDE", units: "radians", ty: Ty::F64 },    // 30
+    Field { name: "TOTAL WEIGHT", units: "pounds", ty: Ty::F64 },                 // 31
+    Field { name: "STALL WARNING", units: "bool", ty: Ty::I32 },                  // 32
+    Field { name: "GPS WP DISTANCE", units: "nautical miles", ty: Ty::F64 },      // 33
+    Field { name: "GPS WP ETE", units: "seconds", ty: Ty::F64 },                  // 34
+    Field { name: "GPS WP DESIRED TRACK", units: "degrees", ty: Ty::F64 },        // 35
+    Field { name: "TRANSPONDER CODE:1", units: "BCO16", ty: Ty::I32 },             // 36
+    Field { name: "TITLE", units: "", ty: Ty::Str },                              // 37
+    Field { name: "ATC MODEL", units: "", ty: Ty::Str },                          // 37
+    Field { name: "GPS WP NEXT ID", units: "", ty: Ty::Str },                     // 38
+    Field { name: "ATC ID", units: "", ty: Ty::Str },                             // 39
+];
+
+#[repr(usize)]
+enum Idx {
+    Lat = 0,
+    Lon,
+    Alt,
+    Agl,
+    BaroAlt,
+    Ias,
+    Tas,
+    Gs,
+    Vs,
+    HdgMag,
+    HdgTrue,
+    Pitch,
+    Bank,
+    OnGround,
+    WindDir,
+    WindKt,
+    Oat,
+    FuelLb,
+    GearHandle,
+    GearPct,
+    FlapsPct,
+    ParkBrake,
+    ApMaster,
+    Eng1,
+    GForce,
+    TdVs,
+    TdBank,
+    TdPitch,
+    TdHdg,
+    TdLat,
+    TdLon,
+    TotalWeightLb,
+    Stall,
+    WpDist,
+        WpEte,
+    WpTrack,
+    Squawk,
+
+
+}
+
+const DEF_ID: u32 = 1;
+const REQ_ID: u32 = 1;
+
+#[derive(Clone, Debug)]
+pub struct Telemetry {
+    pub lat: f64,
+    pub lon: f64,
+    pub alt_ft: f64,
+    pub agl_ft: f64,
+    pub baro_alt_ft: f64,
+    pub ias_kt: f64,
+    pub tas_kt: f64,
+    pub gs_kt: f64,
+    pub vs_fpm: f64,
+    pub hdg_mag: f64,
+    pub hdg_true: f64,
+    pub pitch_deg: f64,
+    pub bank_deg: f64,
+    pub on_ground: bool,
+    pub wind_dir: f64,
+    pub wind_kt: f64,
+    pub oat_c: f64,
+    pub fuel_kg: f64,
+    pub gear_down: bool,
+    pub gear_pct: f64,
+    pub flaps_pct: f64,
+    pub park_brake: bool,
+    pub autopilot: bool,
+    pub engine_on: bool,
+    pub g_force: f64,
+    pub td_vs_fps: f64,
+    pub td_bank_deg: f64,
+    pub td_pitch_deg: f64,
+    pub td_hdg_deg: f64,
+    pub td_lat: f64,
+    pub td_lon: f64,
+    pub weight_kg: f64,
+    pub stall_warning: bool,
+    pub wp_dist_nm: f64,
+    pub wp_ete_s: f64,
+    pub wp_track: f64,
+    pub squawk: String,
+    pub title: String,
+    pub atc_model: String,
+    pub wp_next: String,
+    pub atc_id: String,
+}
+
+const LB_TO_KG: f64 = 0.453_592_37;
+
+impl Default for Telemetry {
+    fn default() -> Self {
+        Self {
+            lat: f64::NAN,
+            lon: f64::NAN,
+            alt_ft: f64::NAN,
+            agl_ft: f64::NAN,
+            baro_alt_ft: f64::NAN,
+            ias_kt: f64::NAN,
+            tas_kt: f64::NAN,
+            gs_kt: f64::NAN,
+            vs_fpm: f64::NAN,
+            hdg_mag: f64::NAN,
+            hdg_true: f64::NAN,
+            pitch_deg: f64::NAN,
+            bank_deg: f64::NAN,
+            on_ground: true,
+            wind_dir: f64::NAN,
+            wind_kt: f64::NAN,
+            oat_c: f64::NAN,
+            fuel_kg: f64::NAN,
+            gear_down: false,
+            gear_pct: f64::NAN,
+            flaps_pct: f64::NAN,
+            park_brake: false,
+            autopilot: false,
+            engine_on: false,
+            g_force: f64::NAN,
+            td_vs_fps: f64::NAN,
+            td_bank_deg: f64::NAN,
+            td_pitch_deg: f64::NAN,
+            td_hdg_deg: f64::NAN,
+            td_lat: f64::NAN,
+            td_lon: f64::NAN,
+            weight_kg: f64::NAN,
+            stall_warning: false,
+            wp_dist_nm: f64::NAN,
+            wp_ete_s: f64::NAN,
+            wp_track: f64::NAN,
+            squawk: String::new(),
+            title: String::new(),
+            atc_model: String::new(),
+            wp_next: String::new(),
+            atc_id: String::new(),
+        }
+    }
+}
+
+impl Telemetry {
+    pub fn position_valid(&self) -> bool {
+        self.lat.is_finite() && self.lon.is_finite() && self.lat != 0.0 && self.lon != 0.0
+    }
+}
+
+pub enum SimEvent {
+    Telemetry(Telemetry),
+    Status(Status),
+    Log(String),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum LinkState {
+    Starting,
+    NoDll,
+    WaitingSim,
+    Connected,
+}
+
+pub struct Status {
+    pub state: LinkState,
+    pub detail: String,
+}
+
+pub fn spawn(tx: Sender<SimEvent>) {
+    let _ = std::thread::Builder::new()
+        .name("simconnect".into())
+        .spawn(move || worker(tx));
+}
+
+fn wide(s: &str) -> Vec<u16> {
+    s.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+unsafe fn sym(module: *mut c_void, name: &str) -> Option<*mut c_void> {
+    let c = CString::new(name).ok()?;
+    let p = GetProcAddress(module, c.as_ptr() as *const u8);
+    if p.is_null() {
+        None
+    } else {
+        Some(p)
+    }
+}
+
+fn load_api() -> Result<Api, String> {
+    let mut candidates: Vec<String> = Vec::new();
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            candidates.push(dir.join("SimConnect.dll").to_string_lossy().into_owned());
+            candidates.push(
+                dir.join("resources")
+                    .join("SimConnect.dll")
+                    .to_string_lossy()
+                    .into_owned(),
+            );
+        }
+    }
+    candidates.push("SimConnect.dll".to_string());
+
+    let mut tried = Vec::new();
+    for path in &candidates {
+        let w = wide(path);
+        let module = unsafe { LoadLibraryW(w.as_ptr()) };
+        if module.is_null() {
+            tried.push(path.clone());
+            continue;
+        }
+        unsafe {
+            let open = sym(module, "SimConnect_Open");
+            let close = sym(module, "SimConnect_Close");
+            let add = sym(module, "SimConnect_AddToDataDefinition");
+            let request = sym(module, "SimConnect_RequestDataOnSimObject");
+            let next = sym(module, "SimConnect_GetNextDispatch");
+            if let (Some(o), Some(c), Some(a), Some(r), Some(n)) = (open, close, add, request, next) {
+                return Ok(Api {
+                    open: std::mem::transmute::<*mut c_void, FnOpen>(o),
+                    close: std::mem::transmute::<*mut c_void, FnClose>(c),
+                    add: std::mem::transmute::<*mut c_void, FnAdd>(a),
+                    request: std::mem::transmute::<*mut c_void, FnRequest>(r),
+                    next: std::mem::transmute::<*mut c_void, FnNext>(n),
+                });
+            }
+        }
+        tried.push(format!("{path} (missing exports)"));
+    }
+    Err(format!(
+        "SimConnect.dll not found. Place it next to the .exe. Tried: {}",
+        tried.join(", ")
+    ))
+}
+
+fn worker(tx: Sender<SimEvent>) {
+    loop {
+        let api = match load_api() {
+            Ok(api) => api,
+            Err(err) => {
+                let _ = tx.send(SimEvent::Status(Status {
+                    state: LinkState::NoDll,
+                    detail: err,
+                }));
+                std::thread::sleep(Duration::from_secs(5));
+                continue;
+            }
+        };
+
+        let _ = tx.send(SimEvent::Status(Status {
+            state: LinkState::WaitingSim,
+            detail: "Looking for Microsoft Flight Simulator…".to_string(),
+        }));
+
+        loop {
+            match unsafe { connect(&api) } {
+                Ok(handle) => {
+                    let _ = tx.send(SimEvent::Status(Status {
+                        state: LinkState::Connected,
+                        detail: "SimConnect link established".to_string(),
+                    }));
+                    unsafe { read_loop(&api, handle, &tx) };
+                    unsafe { (api.close)(handle) };
+                    break;
+                }
+                Err(err) => {
+                    let _ = tx.send(SimEvent::Status(Status {
+                        state: LinkState::WaitingSim,
+                        detail: err,
+                    }));
+                    std::thread::sleep(Duration::from_millis(2500));
+                }
+            }
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+}
+
+unsafe fn connect(api: &Api) -> Result<Handle, String> {
+    let mut handle: Handle = std::ptr::null_mut();
+    let app_name = b"MSFS Flight Tracker\0";
+    let hr = (api.open)(
+        &mut handle,
+        app_name.as_ptr(),
+        std::ptr::null_mut(),
+        0,
+        std::ptr::null_mut(),
+        0,
+    );
+    if hr != 0 || handle.is_null() {
+        return Err(format!(
+            "Microsoft Flight Simulator is not running (SimConnect_Open 0x{:08X})",
+            hr as u32
+        ));
+    }
+
+    for field in FIELDS {
+        let name = CString::new(field.name).unwrap_or_default();
+        let units = CString::new(field.units).unwrap_or_default();
+        let ty = match field.ty {
+            Ty::F64 => 4,
+            Ty::I32 => 1,
+            Ty::Str => 9, // STRING256
+        };
+        let hr = (api.add)(
+            handle,
+            DEF_ID,
+            name.as_ptr() as *const u8,
+            units.as_ptr() as *const u8,
+            ty,
+            0.0,
+            u32::MAX,
+        );
+        if hr != 0 {
+            (api.close)(handle);
+            return Err(format!(
+                "SimConnect rejected '{}' (0x{:08X})",
+                field.name, hr as u32
+            ));
+        }
+    }
+
+    // SIMCONNECT_PERIOD_SIM_FRAME = 3
+    let hr = (api.request)(handle, REQ_ID, DEF_ID, 0, 3, 0, 0, 0, 0);
+    if hr != 0 {
+        (api.close)(handle);
+        return Err(format!(
+            "SimConnect_RequestDataOnSimObject failed (0x{:08X})",
+            hr as u32
+        ));
+    }
+    Ok(handle)
+}
+
+#[inline]
+unsafe fn rd_u32(base: *const u8, off: usize) -> u32 {
+    std::ptr::read_unaligned(base.add(off) as *const u32)
+}
+
+#[inline]
+unsafe fn rd_f64(base: *const u8, off: usize) -> f64 {
+    std::ptr::read_unaligned(base.add(off) as *const f64)
+}
+
+unsafe fn decode(base: *const u8, size: u32) -> Option<Telemetry> {
+    if size < 44 {
+        return None;
+    }
+    let mut offset = 40usize; // SIMCONNECT_RECV_SIMOBJECT_DATA header
+    let mut numbers: Vec<f64> = Vec::with_capacity(FIELDS.len());
+    let mut strings: Vec<String> = Vec::new();
+
+    for field in FIELDS {
+        match field.ty {
+            Ty::F64 => {
+                if offset + 8 > size as usize {
+                    return None;
+                }
+                numbers.push(rd_f64(base, offset));
+                offset += 8;
+            }
+            Ty::I32 => {
+                if offset + 4 > size as usize {
+                    return None;
+                }
+                numbers.push(rd_u32(base, offset) as i32 as f64);
+                offset += 4;
+            }
+            Ty::Str => {
+                const LEN: usize = 256;
+                if offset + LEN > size as usize {
+                    return None;
+                }
+                let bytes = std::slice::from_raw_parts(base.add(offset), LEN);
+                let end = bytes.iter().position(|b| *b == 0).unwrap_or(LEN);
+                strings.push(String::from_utf8_lossy(&bytes[..end]).trim().to_string());
+                offset += LEN;
+            }
+        }
+    }
+
+    let n = |i: Idx| numbers[i as usize];
+    let s = |i: usize| strings.get(i).cloned().unwrap_or_default();
+
+    let rad_to_deg = |v: f64| {
+        if v.is_finite() && v.abs() <= 3.2 {
+            v.to_degrees()
+        } else {
+            v
+        }
+    };
+
+    Some(Telemetry {
+        lat: n(Idx::Lat),
+        lon: n(Idx::Lon),
+        alt_ft: n(Idx::Alt),
+        agl_ft: n(Idx::Agl),
+        baro_alt_ft: n(Idx::BaroAlt),
+        ias_kt: n(Idx::Ias),
+        tas_kt: n(Idx::Tas),
+        gs_kt: n(Idx::Gs),
+        vs_fpm: n(Idx::Vs),
+        hdg_mag: n(Idx::HdgMag),
+        hdg_true: n(Idx::HdgTrue),
+        pitch_deg: n(Idx::Pitch),
+        bank_deg: n(Idx::Bank),
+        on_ground: n(Idx::OnGround) != 0.0,
+        wind_dir: n(Idx::WindDir),
+        wind_kt: n(Idx::WindKt),
+        oat_c: n(Idx::Oat),
+        fuel_kg: n(Idx::FuelLb) * LB_TO_KG,
+        gear_down: n(Idx::GearHandle) != 0.0,
+        gear_pct: n(Idx::GearPct),
+        flaps_pct: n(Idx::FlapsPct),
+        park_brake: n(Idx::ParkBrake) != 0.0,
+        autopilot: n(Idx::ApMaster) != 0.0,
+        engine_on: n(Idx::Eng1) != 0.0,
+        g_force: n(Idx::GForce),
+        td_vs_fps: n(Idx::TdVs),
+        td_bank_deg: n(Idx::TdBank),
+        td_pitch_deg: n(Idx::TdPitch),
+        td_hdg_deg: n(Idx::TdHdg),
+        td_lat: rad_to_deg(n(Idx::TdLat)),
+        td_lon: rad_to_deg(n(Idx::TdLon)),
+        weight_kg: n(Idx::TotalWeightLb) * LB_TO_KG,
+        stall_warning: n(Idx::Stall) != 0.0,
+        wp_dist_nm: n(Idx::WpDist),
+        wp_ete_s: n(Idx::WpEte),
+        wp_track: n(Idx::WpTrack),
+        squawk: {
+            let code = n(Idx::Squawk) as i64;
+            if code > 0 && code <= 0x7777 {
+                format!("{code:04X}")
+            } else {
+                String::new()
+            }
+        },
+        title: s(0),
+        atc_model: s(1),
+        wp_next: s(2),
+        atc_id: s(3),
+    })
+}
+
+unsafe fn read_loop(api: &Api, handle: Handle, tx: &Sender<SimEvent>) {
+    let mut last_packet = Instant::now();
+    let mut last_send = Instant::now() - Duration::from_secs(1);
+
+    loop {
+        let mut data: *mut u8 = std::ptr::null_mut();
+        let mut size: u32 = 0;
+        let hr = (api.next)(handle, &mut data, &mut size);
+        if hr == 0 && !data.is_null() {
+            last_packet = Instant::now();
+            let id = rd_u32(data, 8);
+            match id {
+                8 => {
+                    // SIMCONNECT_RECV_ID_SIMOBJECT_DATA
+                    if last_send.elapsed() >= Duration::from_millis(60) {
+                        if let Some(t) = decode(data, size) {
+                            last_send = Instant::now();
+                            if tx.send(SimEvent::Telemetry(t)).is_err() {
+                                return;
+                            }
+                        }
+                    }
+                }
+                1 => {
+                    // SIMCONNECT_RECV_ID_EXCEPTION
+                    let code = rd_u32(data, 12);
+                    let index = rd_u32(data, 20);
+                    let _ = tx.send(SimEvent::Log(format!(
+                        "SimConnect exception {code} (datum #{index})"
+                    )));
+                }
+                3 => return, // SIMCONNECT_RECV_ID_QUIT
+                _ => {}
+            }
+        } else {
+            std::thread::sleep(Duration::from_millis(5));
+            if last_packet.elapsed() > Duration::from_secs(20) {
+                return; // link went silent: reconnect
+            }
+        }
+    }
+}
