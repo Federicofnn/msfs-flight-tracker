@@ -164,6 +164,31 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
+    fn gist_roundtrip() {
+        let token = std::fs::read_to_string("tools/.token")
+            .expect("write the token to tools/.token first")
+            .trim()
+            .to_string();
+        let mut flight = record("roundtrip-1", 1_700_000_000);
+        flight.origin = "LIRF".to_string();
+        flight.dest = "LIRN".to_string();
+        flight.duration_s = 3600.0;
+        let id = push(&token, "", &[flight.clone()]).expect("create gist");
+        println!("created gist {id}");
+        let pulled = pull(&token, &id).expect("read gist");
+        assert_eq!(pulled.len(), 1);
+        assert_eq!(pulled[0].origin, "LIRF");
+        let updated = push(&token, &id, &[flight, record("roundtrip-2", 1_700_000_100)])
+            .expect("update gist");
+        assert_eq!(updated, id);
+        assert_eq!(pull(&token, &id).expect("read again").len(), 2);
+        let url = format!("{API}/gists/{id}");
+        let (status, _) = net::api_request("DELETE", &url, &headers(&token), None).expect("delete");
+        println!("deleted gist: HTTP {status}");
+    }
+
+    #[test]
     fn a_full_track_is_trimmed_for_the_gist() {
         let mut full = record("a", 1);
         full.track = (0..1000)
