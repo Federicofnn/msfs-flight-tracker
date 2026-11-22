@@ -57,7 +57,7 @@ enum NetJob {
 
 enum NetDone {
     Briefing(Result<(FlightPlan, simbrief::Briefing), String>),
-    Photo(Result<(egui::ColorImage, &'static str), String>),
+    Photo(Result<(egui::ColorImage, &'static str, String), String>),
     Traffic(traffic::Fetched),
     UpdateCheck(Result<Option<update::Release>, String>),
     UpdateDownload(Result<std::path::PathBuf, String>),
@@ -76,7 +76,8 @@ fn spawn_net() -> (Sender<NetJob>, Receiver<NetDone>) {
                 }
                 NetJob::Photo(lookup) => {
                     let result = photo::fetch_photo(&lookup).and_then(|photo| {
-                        photo::decode(&photo.bytes).map(|image| (image, photo.source))
+                        photo::decode(&photo.bytes)
+                            .map(|image| (image, photo.source, photo.label))
                     });
                     let _ = done_tx.send(NetDone::Photo(result));
                 }
@@ -106,6 +107,7 @@ pub struct App {
     pub photo: Option<egui::TextureHandle>,
     pub photo_status: String,
     pub photo_source: &'static str,
+    pub photo_label: String,
     photo_for: String,
     pub traffic: traffic::Traffic,
     pub traffic_filter: traffic::Filter,
@@ -161,6 +163,7 @@ impl App {
             photo: None,
             photo_status: String::new(),
             photo_source: "",
+            photo_label: String::new(),
             photo_for: String::new(),
             traffic: traffic::Traffic::default(),
             traffic_filter: traffic::Filter::default(),
@@ -312,9 +315,13 @@ impl App {
                 self.tele.atc_model.trim().to_string()
             };
         }
-        if lookup.airline.trim().is_empty() {
-            lookup.airline = photo::airline_from_title(&self.tele.title);
-        }
+        lookup.callsign = if let Some(briefing) = &self.briefing {
+            briefing.callsign.clone()
+        } else {
+            let airline = self.tele.atc_airline.trim();
+            let flight = self.tele.atc_flight.trim();
+            format!("{airline}{flight}").trim().to_string()
+        };
         if lookup.title.trim().is_empty() {
             lookup.title = self.tele.title.trim().to_string();
         }
@@ -700,13 +707,14 @@ impl App {
                     }
                 }
                 NetDone::Photo(result) => match result {
-                    Ok((image, source)) => {
+                    Ok((image, source, label)) => {
                         self.photo = Some(ctx.load_texture(
                             "aircraft-photo",
                             image,
                             egui::TextureOptions::LINEAR,
                         ));
                         self.photo_source = source;
+                        self.photo_label = label;
                         self.photo_status.clear();
                     }
                     Err(err) => {
@@ -1102,6 +1110,8 @@ fn spawn_demo(tx: Sender<SimEvent>) {
                 atc_model: "A320".to_string(),
                 wp_next: "NEMBO".to_string(),
                 atc_id: "I-DEMO".to_string(),
+                atc_airline: "ITA Airways".to_string(),
+                atc_flight: "610".to_string(),
             };
             let _ = tx.send(SimEvent::Telemetry(telemetry));
             std::thread::sleep(Duration::from_millis(120));

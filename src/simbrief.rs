@@ -20,6 +20,7 @@ pub fn airline_name(code: &str) -> String {
         "SWR" => "SWISS",
         "AUA" => "Austrian Airlines",
         "ITY" => "ITA Airways",
+        "ITA" => "ITA Airways",
         "THY" => "Turkish Airlines",
         "QTR" => "Qatar Airways",
         "SIA" => "Singapore Airlines",

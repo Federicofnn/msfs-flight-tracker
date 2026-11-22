@@ -89,6 +89,8 @@ pub const FIELDS: &[Field] = &[
     Field { name: "ATC MODEL", units: "", ty: Ty::Str },                          // 37
     Field { name: "GPS WP NEXT ID", units: "", ty: Ty::Str },                     // 38
     Field { name: "ATC ID", units: "", ty: Ty::Str },                             // 39
+    Field { name: "ATC AIRLINE", units: "", ty: Ty::Str },                        // 40
+    Field { name: "ATC FLIGHT NUMBER", units: "", ty: Ty::Str },                  // 41
 ];
 
 #[repr(usize)]
@@ -180,6 +182,8 @@ pub struct Telemetry {
     pub atc_model: String,
     pub wp_next: String,
     pub atc_id: String,
+    pub atc_airline: String,
+    pub atc_flight: String,
 }
 
 const LB_TO_KG: f64 = 0.453_592_37;
@@ -228,6 +232,8 @@ impl Default for Telemetry {
             atc_model: String::new(),
             wp_next: String::new(),
             atc_id: String::new(),
+            atc_airline: String::new(),
+            atc_flight: String::new(),
         }
     }
 }
@@ -530,6 +536,8 @@ unsafe fn decode(base: *const u8, size: u32) -> Option<Telemetry> {
         atc_model: s(1),
         wp_next: s(2),
         atc_id: s(3),
+        atc_airline: s(4),
+        atc_flight: s(5),
     })
 }
 

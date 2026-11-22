@@ -18,6 +18,7 @@ public class Win {
   [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
   [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
   [DllImport("user32.dll")] public static extern void mouse_event(uint flags, uint dx, uint dy, int data, UIntPtr extra);
+  [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr hwnd, IntPtr hdc, uint flags);
   [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
 }
 "@
@@ -57,7 +58,12 @@ $width = $rect.Right - $rect.Left
 $height = $rect.Bottom - $rect.Top
 $bitmap = New-Object System.Drawing.Bitmap $width, $height
 $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
-$graphics.CopyFromScreen($rect.Left, $rect.Top, 0, 0, $bitmap.Size)
+$hdc = $graphics.GetHdc()
+$printed = [Win]::PrintWindow($handle, $hdc, 2)
+$graphics.ReleaseHdc($hdc)
+if (-not $printed) {
+    $graphics.CopyFromScreen($rect.Left, $rect.Top, 0, 0, $bitmap.Size)
+}
 $bitmap.Save((Join-Path (Get-Location) $out), [System.Drawing.Imaging.ImageFormat]::Png)
 $graphics.Dispose()
 $bitmap.Dispose()

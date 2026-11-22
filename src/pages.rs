@@ -1301,9 +1301,12 @@ impl App {
                 );
                 ui.add_space(2.0);
                 ui.label(
-                    RichText::new(format!("PHOTO · {}", self.photo_source))
-                        .size(8.0)
-                        .color(DIM),
+                    RichText::new(format!(
+                        "PHOTO · {} · {}",
+                        self.photo_source, self.photo_label
+                    ))
+                    .size(8.0)
+                    .color(DIM),
                 );
             } else if photo_status == "loading" {
                 ui.add_space(10.0);
