@@ -45,7 +45,11 @@ pub fn check(manifest: &str) -> Result<Option<Release>, String> {
     if manifest.is_empty() {
         return Err("No update address configured".to_string());
     }
-    let json = net::get_json(manifest)?;
+    // GitHub serves the manifest as uploaded: tolerate a UTF-8 BOM.
+    let body = net::http_get_max(manifest, 512 * 1024)?;
+    let text = String::from_utf8_lossy(&body);
+    let json: serde_json::Value = serde_json::from_str(text.trim_start_matches('﻿').trim())
+        .map_err(|e| format!("Malformed update manifest: {e}"))?;
     let version = json["version"]
         .as_str()
         .ok_or_else(|| "Update manifest has no version".to_string())?

@@ -38,7 +38,7 @@ $url = if ($BaseUrl) {
     "https://IL-TUO-SITO/releases/MSFSFlightTracker-Setup-$version.exe"
 }
 $manifest = [ordered]@{ version = $version; url = $url; notes = $Notes } | ConvertTo-Json
-Set-Content -Path "dist\release\latest.json" -Value $manifest -Encoding UTF8
+[System.IO.File]::WriteAllText((Join-Path (Get-Location) "dist\release\latest.json"), $manifest, (New-Object System.Text.UTF8Encoding($false)))
 
 $appSize = [math]::Round((Get-Item dist\msfs-flight-tracker.exe).Length / 1MB, 2)
 $setupSize = [math]::Round((Get-Item $setup).Length / 1MB, 2)
