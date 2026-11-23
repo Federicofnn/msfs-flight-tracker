@@ -1,0 +1,15 @@
+    Finished `release` profile [optimized] target(s) in 0.47s
+   Compiling msfs-flight-tracker-setup v1.6.0 (C:\Users\Federico\Desktop\MSFS Tracker Fede\installer)
+    Finished `release` profile [optimized] target(s) in 26.04s
+warning: in the working copy of 'Cargo.lock', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'Cargo.toml', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'app.rc', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'docs/index.html', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'installer/Cargo.lock', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'installer/Cargo.toml', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/cloud.rs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/main.rs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/pages.rs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/tray.rs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'tools/build.err', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'tools/publish-now.ps1', LF will be replaced by CRLF the next time Git touches it

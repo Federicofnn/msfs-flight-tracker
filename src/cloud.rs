@@ -1,8 +1,10 @@
 //! Logbook sync through a GitHub gist.
 //!
-//! The pilot's logbook is uploaded to a private gist they own, so the same
-//! flights are visible in the app and on the companion website, which reads
-//! the gist with the pilot's own token. No server of ours holds the data.
+//! The pilot's logbook is uploaded to a gist they own, so the same flights are
+//! visible in the app and on the companion website. The gist is public: the
+//! website reads it with the logbook code alone, no token and no login. Nobody
+//! else can find it unless they have that code, and nothing passes through a
+//! server of ours.
 
 use crate::flight::FlightRecord;
 use crate::net;
@@ -62,7 +64,7 @@ fn explain(status: u32) -> String {
     }
 }
 
-/// Uploads (or creates) the gist and returns its id.
+/// Uploads the logbook and returns the id of the gist that holds it.
 pub fn push(token: &str, gist: &str, flights: &[FlightRecord]) -> Result<String, String> {
     if token.trim().is_empty() {
         return Err("Add a GitHub token first".to_string());
@@ -70,27 +72,39 @@ pub fn push(token: &str, gist: &str, flights: &[FlightRecord]) -> Result<String,
     let content = serde_json::to_string(&payload(flights))
         .map_err(|e| format!("Cannot encode the logbook: {e}"))?;
     let id = gist.trim();
-    let (method, url, body) = if id.is_empty() {
-        (
-            "POST",
-            format!("{API}/gists"),
-            format!(
-                "{{\"description\":\"MSFS Flight Tracker logbook\",\"public\":false,\"files\":{{\"{FILE}\":{{\"content\":{content}}}}}}}"
-            ),
-        )
-    } else {
-        (
-            "PATCH",
-            format!("{API}/gists/{id}"),
-            format!("{{\"files\":{{\"{FILE}\":{{\"content\":{content}}}}}}}"),
-        )
-    };
-    let (status, text) = net::api_request(method, &url, &headers(token), Some(&body))?;
+    if id.is_empty() {
+        return create(token, &content);
+    }
+    let url = format!("{API}/gists/{id}");
+    let body = format!("{{\"files\":{{\"{FILE}\":{{\"content\":{content}}}}}}}");
+    let (status, text) = net::api_request("PATCH", &url, &headers(token), Some(&body))?;
     if !(200..300).contains(&status) {
         return Err(explain(status));
     }
     let json: serde_json::Value =
         serde_json::from_str(&text).map_err(|e| format!("Malformed GitHub response: {e}"))?;
+    if json["public"].as_bool().unwrap_or(false) {
+        return gist_id(&json);
+    }
+    // A gist cannot be switched from secret to public: move the logbook to a new
+    // one, otherwise the website could not open it without a token.
+    create(token, &content)
+}
+
+fn create(token: &str, content: &str) -> Result<String, String> {
+    let body = format!(
+        "{{\"description\":\"MSFS Flight Tracker logbook\",\"public\":true,\"files\":{{\"{FILE}\":{{\"content\":{content}}}}}}}"
+    );
+    let (status, text) = net::api_request("POST", &format!("{API}/gists"), &headers(token), Some(&body))?;
+    if !(200..300).contains(&status) {
+        return Err(explain(status));
+    }
+    let json: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| format!("Malformed GitHub response: {e}"))?;
+    gist_id(&json)
+}
+
+fn gist_id(json: &serde_json::Value) -> Result<String, String> {
     json["id"]
         .as_str()
         .map(|value| value.to_string())

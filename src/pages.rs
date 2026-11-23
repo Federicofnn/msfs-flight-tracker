@@ -2797,8 +2797,9 @@ impl App {
             let mut changed = false;
             ui.label(
                 RichText::new(
-                    "The same logbook here and on the website. Flights are stored in a private \
-                     gist of your GitHub account, so nothing passes through a server of ours.",
+                    "The same logbook here and on the website. Flights are stored in a public \
+                     gist of your GitHub account: whoever has the logbook code can read it, and \
+                     nothing passes through a server of ours.",
                 )
                 .size(10.5)
                 .color(DIM),
@@ -2819,7 +2820,7 @@ impl App {
                 }
             });
             ui.horizontal(|ui| {
-                ui.label(RichText::new("Gist ID").size(11.5).color(MUTED));
+                ui.label(RichText::new("Logbook code").size(11.5).color(MUTED));
                 if ui
                     .add(
                         egui::TextEdit::singleline(&mut self.store.settings.github_gist)
@@ -2829,6 +2830,17 @@ impl App {
                     .changed()
                 {
                     changed = true;
+                }
+                if ui.button("Copy code").clicked() {
+                    let code = self.store.settings.github_gist.trim().to_string();
+                    if code.is_empty() {
+                        self.cloud_error =
+                            "Upload the logbook first: the code appears here".to_string();
+                    } else {
+                        ui.ctx().copy_text(code.clone());
+                        self.cloud_status =
+                            format!("Code {code} copied: paste it once on the website");
+                    }
                 }
             });
             if ui
@@ -2876,8 +2888,9 @@ impl App {
             }
             ui.label(
                 RichText::new(
-                    "Token: github.com/settings/tokens → classic token with the gist scope. It \
-                     stays in %APPDATA%\\MSFSFlightTracker\\settings.json, never in the cloud.",
+                    "The token is only for this app (github.com/settings/tokens → classic token \
+                     with the gist scope) and stays in settings.json. The website needs no login: \
+                     it opens the logbook with the code, asked once and remembered.",
                 )
                 .size(9.5)
                 .color(DIM),

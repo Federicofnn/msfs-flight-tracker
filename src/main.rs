@@ -11,6 +11,7 @@ mod simbrief;
 mod store;
 mod theme;
 mod traffic;
+mod tray;
 mod update;
 mod util;
 mod widgets;
@@ -135,6 +136,8 @@ pub struct App {
     pub photo_credit: String,
     pub confirm_stop: bool,
     pub allow_exit: bool,
+    tray: Option<tray_icon::TrayIcon>,
+    tray_tried: bool,
     pub cloud_status: String,
     pub cloud_error: String,
     pub cloud_busy: bool,
@@ -197,6 +200,8 @@ impl App {
             photo_credit: String::new(),
             confirm_stop: false,
             allow_exit: false,
+            tray: None,
+            tray_tried: false,
             cloud_status: String::new(),
             cloud_error: String::new(),
             cloud_busy: false,
@@ -462,8 +467,15 @@ impl App {
     }
 
     pub fn open_site(&self) {
+        // The code in the link means the site opens the logbook straight away.
+        let gist = self.store.settings.github_gist.trim();
+        let url = if gist.is_empty() {
+            "https://federicofnn.github.io/msfs-flight-tracker/".to_string()
+        } else {
+            format!("https://federicofnn.github.io/msfs-flight-tracker/#{gist}")
+        };
         let _ = std::process::Command::new("cmd")
-            .args(["/C", "start", "", "https://federicofnn.github.io/msfs-flight-tracker/"])
+            .args(["/C", "start", "", &url])
             .spawn();
     }
 
@@ -1125,11 +1137,34 @@ impl App {
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if !self.tray_tried {
+            self.tray_tried = true;
+            self.tray = tray::start(ctx);
+        }
+        for msg in tray::take() {
+            match msg {
+                tray::TrayMsg::Show => {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                }
+                tray::TrayMsg::Quit => {
+                    self.allow_exit = true;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+            }
+        }
         if ctx.input(|input| input.viewport().close_requested()) && !self.allow_exit {
             // Closing keeps the tracker alive, so a flight in progress is not lost.
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
-            self.toast_msg("Still running in the background");
+            if self.tray.is_some() {
+                // Out of the taskbar and next to the clock; the icon reopens it.
+                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+                self.toast_msg("Still running next to the clock");
+            } else {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+                self.toast_msg("Still running in the background");
+            }
         }
         self.pump(ctx);
         self.handle_dropped_files(ctx);
