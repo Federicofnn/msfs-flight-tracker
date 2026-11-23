@@ -1037,6 +1037,14 @@ impl App {
                             LinkState::Starting => ("STARTING", theme::MUTED),
                         };
                         widgets::pill(ui, label, color);
+                        if !self.fresh() && !self.link_detail.trim().is_empty() {
+                            ui.add_space(6.0);
+                            ui.label(
+                                egui::RichText::new(short_detail(&self.link_detail))
+                                    .size(10.5)
+                                    .color(theme::MUTED),
+                            );
+                        }
                         ui.add_space(6.0);
                         ui.label(
                             egui::RichText::new(util::fmt_zulu_hhmm(util::now_epoch()))
@@ -1173,6 +1181,17 @@ impl eframe::App for App {
         self.toast_ui(ctx);
         ctx.request_repaint_after(Duration::from_millis(80));
     }
+}
+
+/// The link message is cut so the top bar keeps its shape.
+fn short_detail(text: &str) -> String {
+    const MAX: usize = 64;
+    let text = text.trim();
+    if text.chars().count() <= MAX {
+        return text.to_string();
+    }
+    let cut: String = text.chars().take(MAX).collect();
+    format!("{cut}…")
 }
 
 fn demo_plan() -> Option<FlightPlan> {

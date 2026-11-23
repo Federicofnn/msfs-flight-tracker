@@ -86,12 +86,23 @@ pub const FIELDS: &[Field] = &[
     Field { name: "GPS WP DESIRED TRACK", units: "degrees", ty: Ty::F64 },        // 35
     Field { name: "TRANSPONDER CODE:1", units: "BCO16", ty: Ty::I32 },             // 36
     Field { name: "TITLE", units: "", ty: Ty::Str },                              // 37
-    Field { name: "ATC MODEL", units: "", ty: Ty::Str },                          // 37
-    Field { name: "GPS WP NEXT ID", units: "", ty: Ty::Str },                     // 38
-    Field { name: "ATC ID", units: "", ty: Ty::Str },                             // 39
-    Field { name: "ATC AIRLINE", units: "", ty: Ty::Str },                        // 40
-    Field { name: "ATC FLIGHT NUMBER", units: "", ty: Ty::Str },                  // 41
+    Field { name: "ATC MODEL", units: "", ty: Ty::Str },                          // 38
+    Field { name: "GPS WP NEXT ID", units: "", ty: Ty::Str },                     // 39
+    Field { name: "ATC ID", units: "", ty: Ty::Str },                             // 40
+    Field { name: "ATC AIRLINE", units: "", ty: Ty::Str },                        // 41
+    Field { name: "ATC FLIGHT NUMBER", units: "", ty: Ty::Str },                  // 42
 ];
+
+impl Ty {
+    /// `SIMCONNECT_DATATYPE` value and width in bytes of the datum.
+    fn wire(self) -> (u32, usize) {
+        match self {
+            Ty::F64 => (4, 8),
+            Ty::I32 => (1, 4),
+            Ty::Str => (9, 256), // SIMCONNECT_DATATYPE_STRING256
+        }
+    }
+}
 
 #[repr(usize)]
 enum Idx {
@@ -132,12 +143,34 @@ enum Idx {
         WpEte,
     WpTrack,
     Squawk,
-
-
+    Title,
+    AtcModel,
+    WpNext,
+    AtcId,
+    AtcAirline,
+    AtcFlight,
 }
 
 const DEF_ID: u32 = 1;
 const REQ_ID: u32 = 1;
+
+/// SIMCONNECT_RECV_SIMOBJECT_DATA header: size, version, id, request id,
+/// object id, define id, flags, entry number, out of, define count.
+const PACKET_HEAD: usize = 40;
+
+/// What the simulator accepted from `FIELDS`, with the byte offset of every
+/// datum inside the packet. When a variable is refused it is simply left out,
+/// so one bad name never costs the whole telemetry stream.
+struct Layout {
+    slots: Vec<(usize, usize)>,
+    bytes: usize,
+}
+
+struct Link {
+    handle: Handle,
+    layout: Layout,
+    rejected: Vec<&'static str>,
+}
 
 #[derive(Clone, Debug)]
 pub struct Telemetry {
@@ -351,13 +384,28 @@ fn worker(tx: Sender<SimEvent>) {
 
         loop {
             match unsafe { connect(&api) } {
-                Ok(handle) => {
+                Ok(link) => {
+                    let mut detail = format!(
+                        "SimConnect link established · {} variables ({})",
+                        link.layout.slots.len(),
+                        link.layout.bytes
+                    );
+                    if !link.rejected.is_empty() {
+                        detail.push_str(&format!(" · {} refused", link.rejected.len()));
+                    }
                     let _ = tx.send(SimEvent::Status(Status {
                         state: LinkState::Connected,
-                        detail: "SimConnect link established".to_string(),
+                        detail,
                     }));
-                    unsafe { read_loop(&api, handle, &tx) };
-                    unsafe { (api.close)(handle) };
+                    if !link.rejected.is_empty() {
+                        let _ = tx.send(SimEvent::Log(format!(
+                            "The simulator refused {} variable(s): {}",
+                            link.rejected.len(),
+                            link.rejected.join(", ")
+                        )));
+                    }
+                    unsafe { read_loop(&api, &link, &tx) };
+                    unsafe { (api.close)(link.handle) };
                     break;
                 }
                 Err(err) => {
@@ -373,7 +421,7 @@ fn worker(tx: Sender<SimEvent>) {
     }
 }
 
-unsafe fn connect(api: &Api) -> Result<Handle, String> {
+unsafe fn connect(api: &Api) -> Result<Link, String> {
     let mut handle: Handle = std::ptr::null_mut();
     let app_name = b"MSFS Flight Tracker\0";
     let hr = (api.open)(
@@ -391,14 +439,13 @@ unsafe fn connect(api: &Api) -> Result<Handle, String> {
         ));
     }
 
-    for field in FIELDS {
+    let mut slots: Vec<(usize, usize)> = Vec::with_capacity(FIELDS.len());
+    let mut rejected: Vec<&'static str> = Vec::new();
+    let mut bytes = 0usize;
+    for (index, field) in FIELDS.iter().enumerate() {
         let name = CString::new(field.name).unwrap_or_default();
         let units = CString::new(field.units).unwrap_or_default();
-        let ty = match field.ty {
-            Ty::F64 => 4,
-            Ty::I32 => 1,
-            Ty::Str => 9, // STRING256
-        };
+        let (ty, width) = field.ty.wire();
         let hr = (api.add)(
             handle,
             DEF_ID,
@@ -409,12 +456,23 @@ unsafe fn connect(api: &Api) -> Result<Handle, String> {
             u32::MAX,
         );
         if hr != 0 {
-            (api.close)(handle);
-            return Err(format!(
-                "SimConnect rejected '{}' (0x{:08X})",
-                field.name, hr as u32
-            ));
+            // Simulators differ in the variables they still provide: skip the
+            // odd one out instead of losing every reading.
+            rejected.push(field.name);
+            continue;
         }
+        slots.push((index, PACKET_HEAD + bytes));
+        bytes += width;
+    }
+
+    if slots.len() < FIELDS.len() / 2 {
+        (api.close)(handle);
+        return Err(format!(
+            "The simulator refused too many variables ({} of {}): {}",
+            rejected.len(),
+            FIELDS.len(),
+            rejected.join(", ")
+        ));
     }
 
     // SIMCONNECT_PERIOD_SIM_FRAME = 3
@@ -426,7 +484,11 @@ unsafe fn connect(api: &Api) -> Result<Handle, String> {
             hr as u32
         ));
     }
-    Ok(handle)
+    Ok(Link {
+        handle,
+        layout: Layout { slots, bytes },
+        rejected,
+    })
 }
 
 #[inline]
@@ -439,45 +501,40 @@ unsafe fn rd_f64(base: *const u8, off: usize) -> f64 {
     std::ptr::read_unaligned(base.add(off) as *const f64)
 }
 
-unsafe fn decode(base: *const u8, size: u32) -> Option<Telemetry> {
-    if size < 44 {
+unsafe fn decode(base: *const u8, size: u32, layout: &Layout) -> Option<Telemetry> {
+    let size = size as usize;
+    if size < PACKET_HEAD {
         return None;
     }
-    let mut offset = 40usize; // SIMCONNECT_RECV_SIMOBJECT_DATA header
-    let mut numbers: Vec<f64> = Vec::with_capacity(FIELDS.len());
-    let mut strings: Vec<String> = Vec::new();
+    let mut numbers: Vec<f64> = vec![f64::NAN; FIELDS.len()];
+    let mut strings: Vec<String> = vec![String::new(); FIELDS.len()];
 
-    for field in FIELDS {
+    for &(index, offset) in &layout.slots {
+        let field = &FIELDS[index];
         match field.ty {
             Ty::F64 => {
-                if offset + 8 > size as usize {
-                    return None;
+                if offset + 8 <= size {
+                    numbers[index] = rd_f64(base, offset);
                 }
-                numbers.push(rd_f64(base, offset));
-                offset += 8;
             }
             Ty::I32 => {
-                if offset + 4 > size as usize {
-                    return None;
+                if offset + 4 <= size {
+                    numbers[index] = rd_u32(base, offset) as i32 as f64;
                 }
-                numbers.push(rd_u32(base, offset) as i32 as f64);
-                offset += 4;
             }
             Ty::Str => {
                 const LEN: usize = 256;
-                if offset + LEN > size as usize {
-                    return None;
+                if offset + LEN <= size {
+                    let bytes = std::slice::from_raw_parts(base.add(offset), LEN);
+                    let end = bytes.iter().position(|b| *b == 0).unwrap_or(LEN);
+                    strings[index] = String::from_utf8_lossy(&bytes[..end]).trim().to_string();
                 }
-                let bytes = std::slice::from_raw_parts(base.add(offset), LEN);
-                let end = bytes.iter().position(|b| *b == 0).unwrap_or(LEN);
-                strings.push(String::from_utf8_lossy(&bytes[..end]).trim().to_string());
-                offset += LEN;
             }
         }
     }
 
     let n = |i: Idx| numbers[i as usize];
-    let s = |i: usize| strings.get(i).cloned().unwrap_or_default();
+    let s = |i: Idx| strings[i as usize].clone();
 
     let rad_to_deg = |v: f64| {
         if v.is_finite() && v.abs() <= 3.2 {
@@ -532,18 +589,20 @@ unsafe fn decode(base: *const u8, size: u32) -> Option<Telemetry> {
                 String::new()
             }
         },
-        title: s(0),
-        atc_model: s(1),
-        wp_next: s(2),
-        atc_id: s(3),
-        atc_airline: s(4),
-        atc_flight: s(5),
+        title: s(Idx::Title),
+        atc_model: s(Idx::AtcModel),
+        wp_next: s(Idx::WpNext),
+        atc_id: s(Idx::AtcId),
+        atc_airline: s(Idx::AtcAirline),
+        atc_flight: s(Idx::AtcFlight),
     })
 }
 
-unsafe fn read_loop(api: &Api, handle: Handle, tx: &Sender<SimEvent>) {
+unsafe fn read_loop(api: &Api, link: &Link, tx: &Sender<SimEvent>) {
+    let handle = link.handle;
     let mut last_packet = Instant::now();
     let mut last_send = Instant::now() - Duration::from_secs(1);
+    let mut reasked = false;
 
     loop {
         let mut data: *mut u8 = std::ptr::null_mut();
@@ -556,7 +615,7 @@ unsafe fn read_loop(api: &Api, handle: Handle, tx: &Sender<SimEvent>) {
                 8 => {
                     // SIMCONNECT_RECV_ID_SIMOBJECT_DATA
                     if last_send.elapsed() >= Duration::from_millis(60) {
-                        if let Some(t) = decode(data, size) {
+                        if let Some(t) = decode(data, size, &link.layout) {
                             last_send = Instant::now();
                             if tx.send(SimEvent::Telemetry(t)).is_err() {
                                 return;
@@ -577,9 +636,110 @@ unsafe fn read_loop(api: &Api, handle: Handle, tx: &Sender<SimEvent>) {
             }
         } else {
             std::thread::sleep(Duration::from_millis(5));
-            if last_packet.elapsed() > Duration::from_secs(20) {
+            let silent = last_packet.elapsed();
+            if !reasked && silent > Duration::from_secs(4) {
+                // A definition requested while the simulator was still at its
+                // main menu can go unanswered; ask once more before dropping
+                // the link and starting over.
+                reasked = true;
+                let _ = (api.request)(handle, REQ_ID, DEF_ID, 0, 3, 0, 0, 0, 0);
+            }
+            if silent > Duration::from_secs(20) {
                 return; // link went silent: reconnect
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn full_layout() -> Layout {
+        let mut slots = Vec::new();
+        let mut bytes = 0usize;
+        for (index, field) in FIELDS.iter().enumerate() {
+            slots.push((index, PACKET_HEAD + bytes));
+            bytes += field.ty.wire().1;
+        }
+        Layout { slots, bytes }
+    }
+
+    /// A packet laid out the way SimConnect answers our definition.
+    fn packet(layout: &Layout) -> Vec<u8> {
+        let mut buf = vec![0u8; PACKET_HEAD + layout.bytes];
+        let total = buf.len() as u32;
+        buf[0..4].copy_from_slice(&total.to_le_bytes());
+        buf[8..12].copy_from_slice(&8u32.to_le_bytes());
+        for (index, field) in FIELDS.iter().enumerate() {
+            let Some(slot) = layout.slots.iter().find(|(i, _)| *i == index) else {
+                continue;
+            };
+            let offset = slot.1;
+            match field.ty {
+                Ty::F64 => {
+                    let value = index as f64 + 0.5;
+                    buf[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+                }
+                Ty::I32 => buf[offset..offset + 4].copy_from_slice(&1i32.to_le_bytes()),
+                Ty::Str => buf[offset..offset + 4].copy_from_slice(b"TEST"),
+            }
+        }
+        buf
+    }
+
+    #[test]
+    fn decodes_every_field() {
+        let layout = full_layout();
+        let buf = packet(&layout);
+        let tele = unsafe { decode(buf.as_ptr(), buf.len() as u32, &layout) }.expect("packet");
+        assert!((tele.lat - 0.5).abs() < 1e-9);
+        assert!((tele.bank_deg - 12.5).abs() < 1e-9);
+        assert!((tele.wp_track - 35.5).abs() < 1e-9);
+        assert!(tele.on_ground && tele.park_brake && tele.autopilot);
+        assert_eq!(tele.title, "TEST");
+        assert_eq!(tele.atc_flight, "TEST");
+        assert!(!tele.squawk.is_empty());
+    }
+
+    /// Not part of the normal run: loads the real DLL and prints exactly what
+    /// the tracker would show, so a live simulator can be checked from a shell.
+    #[test]
+    #[ignore]
+    fn reports_the_link_state() {
+        match load_api() {
+            Ok(api) => match unsafe { connect(&api) } {
+                Ok(link) => {
+                    println!(
+                        "connected: {} variables, {} bytes, refused: {:?}",
+                        link.layout.slots.len(),
+                        link.layout.bytes,
+                        link.rejected
+                    );
+                    unsafe { (api.close)(link.handle) };
+                }
+                Err(err) => println!("not connected: {err}"),
+            },
+            Err(err) => println!("dll: {err}"),
+        }
+    }
+
+    #[test]
+    fn a_refused_variable_keeps_the_rest_aligned() {
+        let mut slots = Vec::new();
+        let mut bytes = 0usize;
+        for (index, field) in FIELDS.iter().enumerate() {
+            if index == Idx::HdgTrue as usize {
+                continue;
+            }
+            slots.push((index, PACKET_HEAD + bytes));
+            bytes += field.ty.wire().1;
+        }
+        let layout = Layout { slots, bytes };
+        let buf = packet(&layout);
+        let tele = unsafe { decode(buf.as_ptr(), buf.len() as u32, &layout) }.expect("packet");
+        assert!(tele.hdg_true.is_nan());
+        assert!((tele.bank_deg - 12.5).abs() < 1e-9);
+        assert_eq!(tele.title, "TEST");
     }
 }
