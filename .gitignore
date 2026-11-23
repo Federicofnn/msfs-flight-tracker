@@ -9,3 +9,5 @@
 /plan_simbrief.png
 /screenshot.png
 tools/.token
+tools/*.log
+tools/*.err
