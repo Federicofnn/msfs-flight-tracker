@@ -222,12 +222,21 @@ impl FlightPlan {
 
     /// Distance still to run along the route from the current position.
     pub fn remaining_nm(&self, lat: f64, lon: f64) -> Option<f64> {
+        self.remaining_from(lat, lon, 0).map(|(remaining, _)| remaining)
+    }
+
+    /// Same, but the route can only move forward: `from` is the leg the
+    /// aircraft was on last time, so a route that flies back over itself (or a
+    /// hold near a later leg) cannot make the distance jump backwards.
+    pub fn remaining_from(&self, lat: f64, lon: f64, from: usize) -> Option<(f64, usize)> {
         let pts = self.points();
         if pts.len() < 2 {
             return None;
         }
-        let mut best = (f64::MAX, 0usize);
-        for i in 0..pts.len() - 1 {
+        let legs = pts.len() - 1;
+        let first = from.min(legs.saturating_sub(1));
+        let mut best = (f64::MAX, first);
+        for i in first..legs {
             let d = distance_to_segment_nm(lat, lon, pts[i], pts[i + 1]);
             if d < best.0 {
                 best = (d, i);
@@ -235,10 +244,10 @@ impl FlightPlan {
         }
         let i = best.1;
         let mut remaining = haversine_nm(lat, lon, pts[i + 1].0, pts[i + 1].1);
-        for j in i + 1..pts.len() - 1 {
+        for j in i + 1..legs {
             remaining += haversine_nm(pts[j].0, pts[j].1, pts[j + 1].0, pts[j + 1].1);
         }
-        Some(remaining)
+        Some((remaining, i))
     }
 
     /// Bearing from the current position to the active destination.
@@ -329,5 +338,17 @@ mod tests {
         let rem = p.remaining_nm(41.8043, 12.2525).unwrap();
         assert!(rem > 100.0);
         assert!(p.tod_nm(35000.0) > 100.0);
+    }
+
+    #[test]
+    fn progress_only_moves_forward() {
+        let p = FlightPlan::parse(SAMPLE, None).unwrap();
+        let legs = p.points().len() - 1;
+        let (start, index) = p.remaining_from(41.8043, 12.2525, 0).unwrap();
+        assert!(index < 2);
+        // Once on the last leg, an earlier leg cannot be picked again.
+        let (late, late_index) = p.remaining_from(41.2, 12.6, legs - 1).unwrap();
+        assert_eq!(late_index, legs - 1);
+        assert!(late <= start + 0.5);
     }
 }

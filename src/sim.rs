@@ -84,7 +84,7 @@ pub const FIELDS: &[Field] = &[
     Field { name: "GPS WP DISTANCE", units: "nautical miles", ty: Ty::F64 },      // 33
     Field { name: "GPS WP ETE", units: "seconds", ty: Ty::F64 },                  // 34
     Field { name: "GPS WP DESIRED TRACK", units: "degrees", ty: Ty::F64 },        // 35
-    Field { name: "TRANSPONDER CODE:1", units: "BCO16", ty: Ty::I32 },             // 36
+    Field { name: "TRANSPONDER CODE:1", units: "Bco16", ty: Ty::I32 },             // 36
     Field { name: "TITLE", units: "", ty: Ty::Str },                              // 37
     Field { name: "ATC MODEL", units: "", ty: Ty::Str },                          // 38
     Field { name: "GPS WP NEXT ID", units: "", ty: Ty::Str },                     // 39
@@ -92,7 +92,11 @@ pub const FIELDS: &[Field] = &[
     Field { name: "ATC AIRLINE", units: "", ty: Ty::Str },                        // 41
     Field { name: "ATC FLIGHT NUMBER", units: "", ty: Ty::Str },                  // 42
     // Second copy of the transponder code: some aircraft only answer it as text.
-    Field { name: "TRANSPONDER CODE:1", units: "BCO16", ty: Ty::Str },             // 43
+    Field { name: "TRANSPONDER CODE:1", units: "Bco16", ty: Ty::Str },             // 43
+    // Transponder mode (0 off, 1 standby, 2 test, 3 on, 4 alt) and the code the
+    // FlyByWire A32NX keeps in its own variable, which the stock one misses.
+    Field { name: "TRANSPONDER STATE:1", units: "Enum", ty: Ty::F64 },             // 44
+    Field { name: "L:A32NX_TRANSPONDER_CODE", units: "number", ty: Ty::F64 },      // 45
 ];
 
 impl Ty {
@@ -152,12 +156,14 @@ enum Idx {
     AtcAirline,
     AtcFlight,
     SquawkText,
+    XpdrState,
+    SquawkLvar,
 }
 
 /// The transponder code arrives as BCD (`0x1000` for squawk 1000) on most
-/// aircraft and as a plain number on some. The text copy covers the aircraft
-/// that only publish it as a string.
-fn squawk_code(raw: i64, text: &str) -> String {
+/// aircraft and as a plain number on some. The text copy and the A32NX local
+/// variable cover the aircraft that only publish it there.
+fn squawk_code(raw: i64, text: &str, lvar: f64) -> String {
     if raw > 0 {
         let hex = format!("{raw:X}");
         if hex.len() <= 4 && hex.chars().all(|c| ('0'..='7').contains(&c)) {
@@ -170,6 +176,9 @@ fn squawk_code(raw: i64, text: &str) -> String {
     let digits: String = text.chars().filter(|c| c.is_ascii_digit()).collect();
     if digits.len() == 4 {
         return digits;
+    }
+    if lvar.is_finite() && lvar > 0.0 && lvar <= 7_777.0 {
+        return format!("{lvar:.0}");
     }
     String::new()
 }
@@ -234,6 +243,8 @@ pub struct Telemetry {
     pub wp_ete_s: f64,
     pub wp_track: f64,
     pub squawk: String,
+    /// 0 off, 1 standby, 2 test, 3 on, 4 alt; NaN when the aircraft is silent.
+    pub xpdr_state: f64,
     pub title: String,
     pub atc_model: String,
     pub wp_next: String,
@@ -284,6 +295,7 @@ impl Default for Telemetry {
             wp_ete_s: f64::NAN,
             wp_track: f64::NAN,
             squawk: String::new(),
+            xpdr_state: f64::NAN,
             title: String::new(),
             atc_model: String::new(),
             wp_next: String::new(),
@@ -604,7 +616,8 @@ unsafe fn decode(base: *const u8, size: u32, layout: &Layout) -> Option<Telemetr
         wp_dist_nm: n(Idx::WpDist),
         wp_ete_s: n(Idx::WpEte),
         wp_track: n(Idx::WpTrack),
-        squawk: squawk_code(n(Idx::Squawk) as i64, &s(Idx::SquawkText)),
+        squawk: squawk_code(n(Idx::Squawk) as i64, &s(Idx::SquawkText), n(Idx::SquawkLvar)),
+        xpdr_state: n(Idx::XpdrState),
         title: s(Idx::Title),
         atc_model: s(Idx::AtcModel),
         wp_next: s(Idx::WpNext),
@@ -741,14 +754,16 @@ mod tests {
     }
 
     #[test]
-    fn squawk_reads_bcd_and_plain_numbers() {
-        assert_eq!(squawk_code(0x1000, ""), "1000");
-        assert_eq!(squawk_code(0x1200, ""), "1200");
-        assert_eq!(squawk_code(4321, ""), "4321");
-        assert_eq!(squawk_code(1200, ""), "1200");
-        assert_eq!(squawk_code(0, "1000"), "1000");
-        assert_eq!(squawk_code(0, "SPD 7700"), "7700");
-        assert_eq!(squawk_code(0, ""), "");
+    fn squawk_reads_bcd_plain_numbers_and_local_variables() {
+        assert_eq!(squawk_code(0x1000, "", f64::NAN), "1000");
+        assert_eq!(squawk_code(0x1200, "", f64::NAN), "1200");
+        assert_eq!(squawk_code(4321, "", f64::NAN), "4321");
+        assert_eq!(squawk_code(1200, "", f64::NAN), "1200");
+        assert_eq!(squawk_code(0, "1000", f64::NAN), "1000");
+        assert_eq!(squawk_code(0, "SPD 7700", f64::NAN), "7700");
+        assert_eq!(squawk_code(0, "", 4521.0), "4521");
+        assert_eq!(squawk_code(0, "", 0.0), "");
+        assert_eq!(squawk_code(0, "", f64::NAN), "");
     }
 
     #[test]

@@ -14,6 +14,7 @@ mod traffic;
 mod tray;
 mod update;
 mod util;
+mod weather;
 mod widgets;
 mod worldmap;
 
@@ -31,6 +32,7 @@ pub enum Page {
     Dashboard,
     Map,
     Plan,
+    Weather,
     Logbook,
     Stats,
     Settings,
@@ -42,6 +44,7 @@ impl Page {
             Page::Dashboard => "Flight deck",
             Page::Map => "Map",
             Page::Plan => "Flight plan",
+            Page::Weather => "Weather",
             Page::Logbook => "Logbook",
             Page::Stats => "Statistics",
             Page::Settings => "Settings",
@@ -53,6 +56,7 @@ enum NetJob {
     Briefing(String),
     Photo(photo::Lookup),
     Traffic(traffic::Filter),
+    Weather(Vec<String>),
     UpdateCheck(String),
     UpdateDownload(update::Release),
     CloudPush {
@@ -71,6 +75,7 @@ enum NetDone {
     Briefing(Result<(FlightPlan, simbrief::Briefing), String>),
     Photo(Result<(egui::ColorImage, &'static str, String, String), String>),
     Traffic(traffic::Fetched),
+    Weather(Result<weather::Set, String>),
     UpdateCheck(Result<Option<update::Release>, String>),
     UpdateDownload(Result<std::path::PathBuf, String>),
     CloudPush(Result<String, String>),
@@ -97,6 +102,9 @@ fn spawn_net() -> (Sender<NetJob>, Receiver<NetDone>) {
                 }
                 NetJob::Traffic(filter) => {
                     let _ = done_tx.send(NetDone::Traffic(traffic::fetch(&filter)));
+                }
+                NetJob::Weather(codes) => {
+                    let _ = done_tx.send(NetDone::Weather(weather::fetch(&codes)));
                 }
                 NetJob::UpdateCheck(url) => {
                     let _ = done_tx.send(NetDone::UpdateCheck(update::check(&url)));
@@ -152,6 +160,12 @@ pub struct App {
     pub map_search: String,
     pub map_filter_tab: u8,
     pub map_filters_open: bool,
+    pub route_progress: usize,
+    pub weather: weather::Set,
+    pub weather_busy: bool,
+    weather_next: Instant,
+    pub weather_extra: Vec<String>,
+    pub weather_search: String,
     live_next: Instant,
     pub tele: Telemetry,
     has_tele: bool,
@@ -221,6 +235,12 @@ impl App {
                 .and_then(|value| value.parse().ok())
                 .unwrap_or(0),
             map_filters_open: true,
+            route_progress: 0,
+            weather: weather::Set::default(),
+            weather_busy: false,
+            weather_next: Instant::now(),
+            weather_extra: Vec::new(),
+            weather_search: String::new(),
             live_next: Instant::now(),
             tele: Telemetry::default(),
             has_tele: false,
@@ -240,6 +260,7 @@ impl App {
                 "map" => Page::Map,
                 "deck" | "dashboard" => Page::Dashboard,
                 "plan" => Page::Plan,
+                "weather" | "metar" => Page::Weather,
                 "logbook" => Page::Logbook,
                 "stats" => Page::Stats,
                 "settings" => Page::Settings,
@@ -422,6 +443,52 @@ impl App {
         self.traffic_next = Instant::now();
     }
 
+    /// Airports whose weather the panel shows: the route first, then whatever
+    /// the pilot added by hand.
+    pub fn weather_codes(&self) -> Vec<String> {
+        let mut codes = Vec::new();
+        if let Some(plan) = &self.plan {
+            if !plan.origin.trim().is_empty() {
+                codes.push(plan.origin.clone());
+            }
+            if !plan.dest.trim().is_empty() {
+                codes.push(plan.dest.clone());
+            }
+        }
+        for code in &self.weather_extra {
+            if !codes.iter().any(|c| c.eq_ignore_ascii_case(code)) {
+                codes.push(code.clone());
+            }
+        }
+        codes
+    }
+
+    pub fn request_weather(&mut self) {
+        if self.weather_busy {
+            return;
+        }
+        let codes = self.weather_codes();
+        if codes.is_empty() {
+            return;
+        }
+        self.weather_busy = true;
+        self.weather.error.clear();
+        self.weather_next = Instant::now() + Duration::from_secs(10 * 60);
+        let _ = self.net_tx.send(NetJob::Weather(codes));
+    }
+
+    /// Asks for fresh weather on the next frame.
+    pub fn weather_refresh_now(&mut self) {
+        self.weather_next = Instant::now();
+    }
+
+    /// The route changed: the weather panel has to look the airports up again.
+    pub fn weather_invalidate(&mut self) {
+        self.weather.airports.clear();
+        self.weather.fetched = 0;
+        self.weather_next = Instant::now();
+    }
+
     pub fn request_traffic(&mut self) {
         if self.traffic.loading || !self.traffic_filter.active() {
             return;
@@ -521,15 +588,6 @@ impl App {
             .spawn();
     }
 
-    /// METAR, TAF and airport weather on metar-taf.com (Italian edition).
-    pub fn open_metar(icao: &str) {
-        let icao = icao.trim().to_uppercase();
-        if icao.is_empty() {
-            return;
-        }
-        Self::open_external(&format!("https://metar-taf.com/it/{icao}"));
-    }
-
     pub fn open_site(&self) {
         // The code in the link means the site opens the logbook straight away.
         let gist = self.store.settings.github_gist.trim();
@@ -621,6 +679,15 @@ impl App {
     fn on_event(&mut self, event: SimEvent) {
         match event {
             SimEvent::Telemetry(t) => {
+                if t.position_valid() {
+                    if let Some(plan) = &self.plan {
+                        if let Some((_, leg)) =
+                            plan.remaining_from(t.lat, t.lon, self.route_progress)
+                        {
+                            self.route_progress = leg;
+                        }
+                    }
+                }
                 let dt = self.last_rx.elapsed().as_secs_f64().clamp(0.01, 5.0);
                 if t.gs_kt.is_finite() {
                     if self.gs_smooth <= 0.0 {
@@ -726,6 +793,8 @@ impl App {
             Ok(loaded) => {
                 let label = format!("{} → {}", loaded.origin, loaded.dest);
                 self.plan = Some(loaded);
+                self.route_progress = 0;
+                self.weather_invalidate();
                 self.plan_error = None;
                 self.store.settings.last_plan = Some(path.display().to_string());
                 self.store.save_settings();
@@ -769,6 +838,8 @@ impl App {
                         Ok((plan, briefing)) => {
                             let label = format!("{} to {}", plan.origin, plan.dest);
                             self.plan = Some(plan);
+                            self.route_progress = 0;
+                            self.weather_invalidate();
                             self.plan_error = None;
                             self.store.settings.last_plan = None;
                             self.store.save_settings();
@@ -781,6 +852,21 @@ impl App {
                             self.request_photo(&lookup, ctx);
                         }
                         Err(err) => self.toast_err(format!("SimBrief: {err}")),
+                    }
+                }
+                NetDone::Weather(result) => {
+                    self.weather_busy = false;
+                    match result {
+                        Ok(set) => {
+                            if !set.error.is_empty() {
+                                self.toast_err(format!("Weather: {}", set.error));
+                            }
+                            self.weather = set;
+                        }
+                        Err(err) => {
+                            self.weather.error = err.clone();
+                            self.toast_err(format!("Weather: {err}"));
+                        }
                     }
                 }
                 NetDone::Traffic(fetched) => {
@@ -936,6 +1022,14 @@ impl App {
             self.traffic.reset();
         }
 
+        if self.page == Page::Weather
+            && !self.weather_busy
+            && Instant::now() >= self.weather_next
+            && !self.weather_codes().is_empty()
+        {
+            self.request_weather();
+        }
+
         if self.store.settings.check_updates && Instant::now() >= self.update_next {
             self.check_updates(false);
         }
@@ -1050,6 +1144,7 @@ impl App {
                     Page::Map,
                     Page::Dashboard,
                     Page::Plan,
+                    Page::Weather,
                     Page::Logbook,
                     Page::Stats,
                     Page::Settings,
@@ -1179,6 +1274,7 @@ impl App {
                                 Page::Dashboard => self.dashboard(ui),
                                 Page::Map => {}
                                 Page::Plan => self.plan_page(ui),
+                                Page::Weather => self.weather_page(ui),
                                 Page::Logbook => self.logbook(ui),
                                 Page::Stats => self.stats_page(ui),
                                 Page::Settings => self.settings_page(ui),
@@ -1378,6 +1474,7 @@ fn spawn_demo(tx: Sender<SimEvent>) {
                 wp_ete_s: 240.0,
                 wp_track: 128.0,
                 squawk: "1000".to_string(),
+                xpdr_state: 4.0,
                 title: "Airbus A320neo — demo".to_string(),
                 atc_model: "A320".to_string(),
                 wp_next: "NEMBO".to_string(),

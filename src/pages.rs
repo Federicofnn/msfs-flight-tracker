@@ -231,7 +231,7 @@ fn rail_icon(painter: &egui::Painter, center: Pos2, kind: u8, color: Color32) {
             );
             painter.circle_filled(center, 1.6, color);
         }
-        3 => {
+        4 => {
             for i in -1..=1 {
                 let y = center.y + i as f32 * 4.5;
                 painter.circle_filled(egui::pos2(center.x - 6.0, y), 1.2, color);
@@ -241,7 +241,7 @@ fn rail_icon(painter: &egui::Painter, center: Pos2, kind: u8, color: Color32) {
                 );
             }
         }
-        4 => {
+        5 => {
             for (i, height) in [5.0_f32, 10.0, 14.0].iter().enumerate() {
                 let x = center.x - 6.0 + i as f32 * 5.5;
                 painter.line_segment(
@@ -252,6 +252,19 @@ fn rail_icon(painter: &egui::Painter, center: Pos2, kind: u8, color: Color32) {
                     Stroke::new(2.2_f32, color),
                 );
             }
+        }
+        3 => {
+            // Cloud with a little sun, for the weather panel.
+            painter.circle_stroke(center + egui::vec2(3.6, -3.6), 3.6, stroke);
+            painter.rect_filled(
+                egui::Rect::from_center_size(
+                    center + egui::vec2(-1.4, 3.4),
+                    egui::vec2(13.0, 7.0),
+                ),
+                egui::CornerRadius::same(3),
+                color,
+            );
+            painter.circle_filled(center + egui::vec2(-5.6, 0.4), 3.2, color);
         }
         _ => {
             painter.circle_stroke(center, 4.2, stroke);
@@ -287,6 +300,122 @@ fn icon_flame(painter: &egui::Painter, center: Pos2, color: Color32) {
         color,
         Stroke::NONE,
     ));
+}
+
+fn category_color(category: &str) -> Color32 {
+    match category.to_uppercase().as_str() {
+        "VFR" => GREEN,
+        "MVFR" => Color32::from_rgb(120, 168, 255),
+        "IFR" => RED,
+        "LIFR" => ORANGE,
+        _ => MUTED,
+    }
+}
+
+fn wx_stat(ui: &mut Ui, label: &str, value: &str) {
+    ui.vertical(|ui| {
+        ui.label(RichText::new(label).size(8.5).color(DIM).strong());
+        ui.label(
+            RichText::new(value)
+                .size(12.5)
+                .family(egui::FontFamily::Monospace)
+                .color(TEXT),
+        );
+    });
+}
+
+fn wx_raw(ui: &mut Ui, label: &str, text: &str, color: Color32) {
+    ui.label(RichText::new(label).size(8.5).color(DIM).strong());
+    ui.add(
+        egui::Label::new(
+            RichText::new(text)
+                .size(11.5)
+                .family(egui::FontFamily::Monospace)
+                .color(color),
+        )
+        .wrap(),
+    );
+}
+
+/// One airport: decoded numbers on top, the untouched report underneath.
+fn weather_card(ui: &mut Ui, airport: &crate::weather::Airport) {
+    let color = category_color(&airport.category);
+    card(ui, "", |ui| {
+        ui.horizontal(|ui| {
+            ui.label(
+                RichText::new(&airport.icao)
+                    .size(24.0)
+                    .strong()
+                    .family(egui::FontFamily::Monospace)
+                    .color(TEXT),
+            );
+            ui.vertical(|ui| {
+                ui.label(RichText::new(&airport.name).size(12.5).color(MUTED));
+                let when = if airport.observed > 0 {
+                    format!("osservato alle {} (ora locale)", fmt_local_hhmm(airport.observed))
+                } else {
+                    "nessuna osservazione recente".to_string()
+                };
+                ui.label(RichText::new(when).size(9.5).color(DIM));
+            });
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if !airport.category.is_empty() {
+                    pill(ui, &airport.category, color);
+                }
+            });
+        });
+
+        ui.add_space(10.0);
+        ui.horizontal_top(|ui| {
+            wx_stat(ui, "VENTO", &airport.wind);
+            ui.add_space(22.0);
+            wx_stat(ui, "VISIBILITÀ", &airport.visibility);
+            ui.add_space(22.0);
+            wx_stat(ui, "NUVOLE", &airport.clouds);
+            ui.add_space(22.0);
+            wx_stat(ui, "TEMP / RUGIADA", &airport.temperature);
+            ui.add_space(22.0);
+            wx_stat(ui, "QNH", &airport.qnh);
+        });
+
+        ui.add_space(10.0);
+        if airport.metar.is_empty() {
+            ui.label(
+                RichText::new("Nessun METAR disponibile per questo aeroporto.")
+                    .size(11.5)
+                    .color(MUTED),
+            );
+        } else {
+            wx_raw(ui, "METAR", &airport.metar, TEXT);
+        }
+
+        if !airport.taf.is_empty() {
+            ui.add_space(8.0);
+            let validity = if airport.taf_from > 0 && airport.taf_to > 0 {
+                let offset = crate::util::local_offset_secs();
+                let start_day = (airport.taf_from as i64 + offset).div_euclid(86_400);
+                let end_day = (airport.taf_to as i64 + offset).div_euclid(86_400);
+                if end_day > start_day {
+                    format!(
+                        "TAF · dalle {} del {} alle {} del {}",
+                        fmt_local_hhmm(airport.taf_from),
+                        crate::util::fmt_local_date(airport.taf_from),
+                        fmt_local_hhmm(airport.taf_to),
+                        crate::util::fmt_local_date(airport.taf_to)
+                    )
+                } else {
+                    format!(
+                        "TAF · valido dalle {} alle {}",
+                        fmt_local_hhmm(airport.taf_from),
+                        fmt_local_hhmm(airport.taf_to)
+                    )
+                }
+            } else {
+                "TAF".to_string()
+            };
+            wx_raw(ui, &validity, &airport.taf, MUTED);
+        }
+    });
 }
 
 fn truncate(text: &str, max: usize) -> String {
@@ -393,6 +522,18 @@ fn landing_banner(ui: &mut Ui, landing: &Landing) -> bool {
     dismiss
 }
 
+/// No live speed and no SimBrief: an average that includes the climb and the
+/// descent, instead of pretending the aircraft is already at cruise the moment
+/// it is pushed out of the gate.
+pub fn preflight_speed_kt(total_nm: f64) -> f64 {
+    match total_nm {
+        distance if distance < 120.0 => 250.0,
+        distance if distance < 300.0 => 330.0,
+        distance if distance < 600.0 => 390.0,
+        _ => 430.0,
+    }
+}
+
 /// Where the flight is along its route, and when it gets there: every screen
 /// reads its times from here so they can never disagree.
 #[derive(Clone, Copy)]
@@ -430,13 +571,28 @@ impl App {
     /// Route progress and arrival, from live speed when the aircraft is moving
     /// and from the plan average otherwise, so the ETA never collapses to "—".
     pub fn trip(&self, t: &Telemetry, plan: &FlightPlan, fresh: bool) -> Trip {
-        let total = plan.total_nm();
+        let mut total = plan.total_nm();
         let flying = fresh && t.position_valid();
-        let remaining = if flying {
-            plan.remaining_nm(t.lat, t.lon).unwrap_or(total)
+        let mut remaining = if flying {
+            plan.remaining_from(t.lat, t.lon, self.route_progress)
+                .map(|(distance, _)| distance)
+                .unwrap_or(total)
         } else {
             total
         };
+        // SimBrief knows the true route length: when our geometry is short
+        // (a fix in the navlog had no coordinates) both numbers move by the
+        // same factor instead of quietly shortening the flight.
+        if let Some(briefing) = &self.briefing {
+            let planned = briefing.route_distance_nm;
+            if planned > 50.0 && total > 50.0 {
+                let scale = planned / total;
+                if (0.5..=2.0).contains(&scale) && (scale - 1.0).abs() > 0.01 {
+                    remaining *= scale;
+                    total = planned;
+                }
+            }
+        }
         let remaining = if remaining.is_finite() {
             remaining.clamp(0.0, total.max(0.0))
         } else {
@@ -452,7 +608,7 @@ impl App {
         } else if let Some(seconds) = planned.filter(|_| total > 1.0) {
             (total / seconds * 3600.0).clamp(120.0, 620.0)
         } else {
-            430.0
+            preflight_speed_kt(total)
         };
         let ete_s = if total > 1.0 && speed > 40.0 {
             remaining / speed * 3600.0
@@ -627,6 +783,23 @@ impl App {
                     } else {
                         "—".to_string()
                     };
+                    let xpdr = if fresh && !t.squawk.is_empty() {
+                        t.squawk.clone()
+                    } else {
+                        "----".to_string()
+                    };
+                    let xpdr_mode = if !t.xpdr_state.is_finite() {
+                        "—".to_string()
+                    } else {
+                        match t.xpdr_state.round() as i64 {
+                            0 => "OFF".to_string(),
+                            1 => "SBY".to_string(),
+                            2 => "TEST".to_string(),
+                            3 => "ON".to_string(),
+                            4 => "ALT".to_string(),
+                            _ => format!("{:.0}", t.xpdr_state),
+                        }
+                    };
                     egui::Grid::new("systems")
                         .num_columns(4)
                         .spacing([14.0, 8.0])
@@ -665,6 +838,19 @@ impl App {
                                 if t.stall_warning { RED } else { TEXT },
                             );
                             ui.end_row();
+                            sys(
+                                ui,
+                                "TRANSPONDER",
+                                &xpdr,
+                                if xpdr == "----" { MUTED } else { GREEN },
+                            );
+                            sys(
+                                ui,
+                                "XPDR MODE",
+                                &xpdr_mode,
+                                if xpdr_mode == "ALT" { CYAN } else { TEXT },
+                            );
+                            ui.end_row();
                         });
                     ui.add_space(8.0);
                     ui.separator();
@@ -696,6 +882,7 @@ impl App {
         let tod = plan.tod_nm(t.alt_ft);
         let fuel_at_dest = t.fuel_kg - self.burn_kg_h * (ete / 3600.0).max(0.0);
 
+        let mut open_weather = false;
         card(ui, "Route progress", |ui| {
             ui.horizontal(|ui| {
                 ui.label(
@@ -764,20 +951,29 @@ impl App {
                     .color(MUTED),
                 );
                 ui.add_space(4.0);
-                ui.label(RichText::new("METAR").size(8.5).color(DIM).strong());
-                if ui
-                    .small_button(format!("{} partenza ↗", plan.origin))
-                    .on_hover_text("METAR, TAF e meteo su metar-taf.com")
-                    .clicked()
-                {
-                    App::open_metar(&plan.origin);
+                ui.label(RichText::new("METEO").size(8.5).color(DIM).strong());
+                for icao in [&plan.origin, &plan.dest] {
+                    let line = self
+                        .weather
+                        .airports
+                        .iter()
+                        .find(|airport| airport.icao.eq_ignore_ascii_case(icao))
+                        .map(|airport| {
+                            format!(
+                                "{} {} · {} · {}",
+                                airport.icao, airport.category, airport.wind, airport.qnh
+                            )
+                        });
+                    if let Some(line) = line {
+                        ui.label(RichText::new(line).size(9.5).color(MUTED));
+                    }
                 }
                 if ui
-                    .small_button(format!("{} arrivo ↗", plan.dest))
-                    .on_hover_text("METAR, TAF e meteo su metar-taf.com")
+                    .small_button("Apri METEO")
+                    .on_hover_text("METAR e TAF decodificati nell'app")
                     .clicked()
                 {
-                    App::open_metar(&plan.dest);
+                    open_weather = true;
                 }
                 if t.fuel_kg.is_finite() && fuel_at_dest.is_finite() {
                     ui.label(
@@ -790,8 +986,27 @@ impl App {
                         .color(if fuel_at_dest < 0.0 { RED } else { MUTED }),
                     );
                 }
+                if let Some(briefing) = &self.briefing {
+                    ui.label(
+                        RichText::new(format!(
+                            "· SimBrief {} NM · {} · media {} kt",
+                            num(briefing.route_distance_nm, 0),
+                            if briefing.planned_ete_s.is_finite() {
+                                fmt_duration(briefing.planned_ete_s)
+                            } else {
+                                "—".to_string()
+                            },
+                            num(trip.speed_kt, 0)
+                        ))
+                        .size(11.0)
+                        .color(DIM),
+                    );
+                }
             });
         });
+        if open_weather {
+            self.page = Page::Weather;
+        }
     }
 
     pub fn plan_page(&mut self, ui: &mut Ui) {
@@ -830,6 +1045,8 @@ impl App {
         }
         if unload {
             self.plan = None;
+            self.route_progress = 0;
+            self.weather_invalidate();
             self.store.settings.last_plan = None;
             self.store.save_settings();
             self.toast_msg("Flight plan unloaded — free flight");
@@ -1076,55 +1293,199 @@ impl App {
         });
 
         ui.add_space(12.0);
-        card(ui, "METAR & TAF", |ui| {
+        let mut open_weather = false;
+        card(ui, "METEO · METAR & TAF", |ui| {
             ui.label(
                 RichText::new(
-                    "Meteo reale degli aeroporti della rotta, su metar-taf.com (edizione italiana).",
+                    "Osservazioni reali degli aeroporti della rotta, lette dai servizi NOAA e \
+                     decodificate qui dentro: nessuna pagina esterna.",
                 )
                 .size(11.5)
                 .color(MUTED),
             );
             ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                if ui
-                    .button(format!("{} partenza ↗", plan.origin))
-                    .on_hover_text("METAR, TAF e meteo di partenza")
-                    .clicked()
+            for icao in [plan.origin.clone(), plan.dest.clone()] {
+                match self
+                    .weather
+                    .airports
+                    .iter()
+                    .find(|airport| airport.icao.eq_ignore_ascii_case(&icao))
                 {
-                    App::open_metar(&plan.origin);
-                }
-                if ui
-                    .button(format!("{} arrivo ↗", plan.dest))
-                    .on_hover_text("METAR, TAF e meteo di arrivo")
-                    .clicked()
-                {
-                    App::open_metar(&plan.dest);
-                }
-            });
-            if let Some(briefing) = &self.briefing {
-                for (icao, text) in [
-                    (plan.origin.clone(), briefing.origin_metar.clone()),
-                    (plan.dest.clone(), briefing.dest_metar.clone()),
-                ] {
-                    if text.trim().is_empty() {
-                        continue;
+                    Some(airport) => {
+                        let color = category_color(&airport.category);
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                RichText::new(&airport.icao)
+                                    .size(15.0)
+                                    .strong()
+                                    .family(egui::FontFamily::Monospace)
+                                    .color(TEXT),
+                            );
+                            if !airport.category.is_empty() {
+                                pill(ui, &airport.category, color);
+                            }
+                            ui.label(
+                                RichText::new(format!(
+                                    "{} · vis {} · {}",
+                                    airport.wind, airport.visibility, airport.qnh
+                                ))
+                                .size(11.0)
+                                .color(MUTED),
+                            );
+                        });
                     }
-                    ui.add_space(8.0);
-                    ui.label(
-                        RichText::new(format!("{icao} · METAR"))
-                            .size(9.0)
-                            .color(DIM)
-                            .strong(),
-                    );
-                    ui.label(
-                        RichText::new(text.trim())
-                            .size(11.0)
-                            .family(egui::FontFamily::Monospace)
-                            .color(MUTED),
-                    );
+                    None => {
+                        ui.label(
+                            RichText::new(format!("{icao} · nessun dato ancora"))
+                                .size(11.5)
+                                .color(DIM),
+                        );
+                    }
                 }
             }
+            ui.add_space(8.0);
+            if ui.button("Apri il pannello METEO").clicked() {
+                open_weather = true;
+            }
         });
+        if open_weather {
+            self.page = Page::Weather;
+        }
+    }
+
+    /// METAR and TAF decoded inside the app: no browser, no external page.
+    pub fn weather_page(&mut self, ui: &mut Ui) {
+        let mut refresh = false;
+        let mut add = false;
+        let mut remove: Option<String> = None;
+        let mut clear_extra = false;
+
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Weather").size(21.0).strong().color(TEXT));
+            ui.add_space(8.0);
+            let status = if self.weather.fetched == 0 {
+                "in attesa dei dati".to_string()
+            } else {
+                format!(
+                    "aggiornato alle {} · {} aeroporti",
+                    fmt_local_hhmm(self.weather.fetched),
+                    self.weather.airports.len()
+                )
+            };
+            ui.label(RichText::new(status).size(12.0).color(MUTED));
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if ui
+                    .add_enabled(
+                        !self.weather_busy,
+                        egui::Button::new(if self.weather_busy {
+                            "Aggiorno…"
+                        } else {
+                            "Aggiorna"
+                        }),
+                    )
+                    .clicked()
+                {
+                    refresh = true;
+                }
+                ui.label(
+                    RichText::new("NOAA Aviation Weather Center")
+                        .size(10.0)
+                        .color(DIM),
+                );
+            });
+        });
+
+        ui.add_space(10.0);
+        ui.horizontal(|ui| {
+            let response = ui.add(
+                egui::TextEdit::singleline(&mut self.weather_search)
+                    .hint_text("ICAO, es. LIRF")
+                    .char_limit(4)
+                    .desired_width(96.0),
+            );
+            let enter = response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+            if (ui.button("Aggiungi").clicked() || enter)
+                && self.weather_search.trim().len() >= 3
+            {
+                add = true;
+            }
+            for code in self.weather_extra.clone() {
+                if ui.small_button(format!("{code}  ×")).clicked() {
+                    remove = Some(code);
+                }
+            }
+            if !self.weather_extra.is_empty() && ui.small_button("Pulisci").clicked() {
+                clear_extra = true;
+            }
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                ui.label(
+                    RichText::new(if self.weather_busy {
+                        "Download dei bollettini…"
+                    } else {
+                        "Aggiornamento automatico ogni 10 minuti"
+                    })
+                    .size(9.5)
+                    .color(DIM),
+                );
+            });
+        });
+
+        if add {
+            let code = self.weather_search.trim().to_uppercase();
+            if !self.weather_extra.iter().any(|c| c == &code) {
+                self.weather_extra.push(code);
+                self.weather_search.clear();
+                self.weather_invalidate();
+                self.weather_refresh_now();
+            }
+        }
+        if let Some(code) = remove {
+            self.weather_extra.retain(|c| c != &code);
+            self.weather_invalidate();
+            self.weather_refresh_now();
+        }
+        if clear_extra {
+            self.weather_extra.clear();
+            self.weather_invalidate();
+            self.weather_refresh_now();
+        }
+        if refresh {
+            self.request_weather();
+        }
+
+        ui.add_space(12.0);
+
+        if !self.weather.error.is_empty() {
+            ui.label(RichText::new(&self.weather.error).size(11.5).color(RED));
+            ui.add_space(8.0);
+        }
+
+        if self.weather.airports.is_empty() {
+            card(ui, "Nessun aeroporto", |ui| {
+                ui.label(
+                    RichText::new(
+                        "Carica un piano di volo (o aggiungi un codice ICAO qui sopra): il METAR e \
+                         il TAF compaiono qui, decodificati, senza aprire nessun sito.",
+                    )
+                    .size(12.5)
+                    .color(MUTED),
+                );
+            });
+            return;
+        }
+
+        for airport in self.weather.airports.clone() {
+            weather_card(ui, &airport);
+            ui.add_space(12.0);
+        }
+
+        ui.label(
+            RichText::new(
+                "Fonte: NOAA Aviation Weather Center (METAR/TAF mondiali, nessuna chiave richiesta).",
+            )
+            .size(9.5)
+            .color(DIM),
+        );
     }
 
     /// Full-bleed map with the floating cards of the reference layout.
@@ -1200,6 +1561,7 @@ impl App {
                 Page::Map,
                 Page::Dashboard,
                 Page::Plan,
+                Page::Weather,
                 Page::Logbook,
                 Page::Stats,
                 Page::Settings,
@@ -1377,7 +1739,7 @@ impl App {
                 (rect.bottom() - rect.top() - 132.0).clamp(400.0, 552.0),
             ),
         );
-        let mut metar: Option<String> = None;
+        let mut open_weather = false;
         let photo = self.photo.clone();
         let photo_status = self.photo_status.clone();
         let photo_hint = self.photo_lookup();
@@ -1556,18 +1918,11 @@ impl App {
                 );
                 ui.add_space(4.0);
                 if ui
-                    .small_button(format!("METAR {origin}"))
-                    .on_hover_text("METAR e TAF su metar-taf.com")
+                    .small_button(format!("METEO {origin}/{dest}"))
+                    .on_hover_text("METAR e TAF nel pannello Weather")
                     .clicked()
                 {
-                    metar = Some(origin.clone());
-                }
-                if ui
-                    .small_button(format!("METAR {dest}"))
-                    .on_hover_text("METAR e TAF su metar-taf.com")
-                    .clicked()
-                {
-                    metar = Some(dest.clone());
+                    open_weather = true;
                 }
             });
 
@@ -2035,8 +2390,8 @@ impl App {
             }
         }
 
-        if let Some(icao) = metar {
-            App::open_metar(&icao);
+        if open_weather {
+            self.page = Page::Weather;
         }
         if toggle_flight {
             self.toggle_flight();
@@ -3210,6 +3565,29 @@ impl App {
             if let Some(warning) = &self.sim_warning {
                 ui.label(RichText::new(warning).size(11.0).color(ORANGE));
             }
+            ui.add_space(8.0);
+            kv(
+                ui,
+                "Transponder",
+                if self.tele.squawk.is_empty() {
+                    "non riportato dall'aeromobile"
+                } else {
+                    self.tele.squawk.as_str()
+                },
+            );
+            let mode = if !self.tele.xpdr_state.is_finite() {
+                "—".to_string()
+            } else {
+                match self.tele.xpdr_state.round() as i64 {
+                    0 => "off".to_string(),
+                    1 => "standby".to_string(),
+                    2 => "test".to_string(),
+                    3 => "on".to_string(),
+                    4 => "alt".to_string(),
+                    other => format!("{other}"),
+                }
+            };
+            kv(ui, "Transponder mode", &mode);
             ui.add_space(6.0);
             ui.label(
                 RichText::new(
@@ -3235,5 +3613,19 @@ impl App {
                 );
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_estimate_grows_with_the_distance() {
+        let short = preflight_speed_kt(80.0);
+        let medium = preflight_speed_kt(250.0);
+        let long = preflight_speed_kt(900.0);
+        assert!(short < medium && medium < long);
+        assert!(short >= 200.0 && long <= 460.0);
     }
 }

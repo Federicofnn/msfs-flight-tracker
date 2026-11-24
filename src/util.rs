@@ -182,6 +182,16 @@ pub fn local_offset_secs() -> i64 {
     0
 }
 
+/// "24 Nov" on the pilot's own calendar.
+pub fn fmt_local_date(epoch: u64) -> String {
+    let shifted = (epoch as i64 + local_offset_secs()).max(0) as u64;
+    let (_, month, day) = civil_from_days((shifted / 86_400) as i64);
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    format!("{} {}", day, MONTHS[(month as usize).clamp(1, 12) - 1])
+}
+
 /// "22:05" on the pilot's own clock.
 pub fn fmt_local_hhmm(epoch: u64) -> String {
     let secs = (epoch as i64 + local_offset_secs()).rem_euclid(86_400);
