@@ -103,16 +103,17 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
     (if m <= 2 { y + 1 } else { y }, m, d)
 }
 
-/// "22 Nov 2026 09:41Z"
-pub fn fmt_utc(epoch: u64) -> String {
-    let days = (epoch / 86_400) as i64;
-    let secs = epoch % 86_400;
+/// "22 Nov 2026 21:41" on the pilot's own clock.
+pub fn fmt_local(epoch: u64) -> String {
+    let shifted = (epoch as i64 + local_offset_secs()).max(0) as u64;
+    let days = (shifted / 86_400) as i64;
+    let secs = shifted % 86_400;
     let (y, m, d) = civil_from_days(days);
     const MONTHS: [&str; 12] = [
         "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
     ];
     format!(
-        "{:02} {} {} {:02}:{:02}Z",
+        "{:02} {} {} {:02}:{:02}",
         d,
         MONTHS[(m as usize).clamp(1, 12) - 1],
         y,

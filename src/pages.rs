@@ -5,7 +5,7 @@ use crate::plan::FlightPlan;
 use crate::sim::{LinkState, Telemetry};
 use crate::theme::*;
 use crate::util::{
-    fmt_clock, fmt_duration, fmt_local_hhmm, fmt_utc, fmt_utc_full, haversine_nm, num, now_epoch,
+    fmt_clock, fmt_duration, fmt_local, fmt_local_hhmm, haversine_nm, num, now_epoch,
 };
 use crate::widgets::{self, card, kv, landing_bars, metric, pill, profile, progress};
 use crate::traffic;
@@ -2227,7 +2227,7 @@ impl App {
                                     (
                                         flight.id.clone(),
                                         flight.route_label(),
-                                        fmt_utc(flight.started),
+                                        fmt_local(flight.started),
                                         fmt_duration(flight.duration_s),
                                         flight.aircraft.clone(),
                                         flight.landing.as_ref().map(|l| l.fpm.abs()),
@@ -2327,7 +2327,7 @@ impl App {
                     );
                     ui.add_space(8.0);
                     ui.label(
-                        RichText::new(fmt_utc_full(flight.started))
+                        RichText::new(fmt_local(flight.started))
                             .size(11.5)
                             .family(egui::FontFamily::Monospace)
                             .color(MUTED),
@@ -2426,8 +2426,8 @@ impl App {
                             kv(ui, "Aircraft", if flight.aircraft.is_empty() { "—" } else { &flight.aircraft });
                             kv(ui, "Departure", if flight.origin.is_empty() { "—" } else { &flight.origin });
                             kv(ui, "Arrival", if flight.dest.is_empty() { "—" } else { &flight.dest });
-                            kv(ui, "Started", &fmt_utc_full(flight.started));
-                            kv(ui, "Ended", &fmt_utc_full(flight.ended));
+                            kv(ui, "Started", &fmt_local(flight.started));
+                            kv(ui, "Ended", &fmt_local(flight.ended));
                             kv(
                                 ui,
                                 "Fuel used",

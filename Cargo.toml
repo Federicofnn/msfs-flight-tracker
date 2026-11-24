@@ -1,6 +1,6 @@
 [package]
 name = "msfs-flight-tracker"
-version = "1.7.0"
+version = "1.7.1"
 edition = "2021"
 description = "Native MSFS flight tracker, landing analyzer and logbook"
 
