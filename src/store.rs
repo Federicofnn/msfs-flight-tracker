@@ -17,10 +17,10 @@ pub struct Settings {
     pub photo_query: String,
     pub check_updates: bool,
     pub update_url: String,
-    /// GitHub token with the gist permission, used only for the logbook sync.
-    pub github_token: String,
-    /// The logbook gist; empty until the first upload.
-    pub github_gist: String,
+    /// The email of the tracker account; empty until the pilot signs in.
+    pub account_email: String,
+    /// The session token of that account. The password is never stored.
+    pub account_token: String,
     pub sync_auto: bool,
 }
 
@@ -36,8 +36,8 @@ impl Default for Settings {
             photo_query: String::new(),
             check_updates: true,
             update_url: String::new(),
-            github_token: String::new(),
-            github_gist: String::new(),
+            account_email: String::new(),
+            account_token: String::new(),
             sync_auto: false,
         }
     }

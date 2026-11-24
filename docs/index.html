@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>MSFS Flight Tracker · Logbook</title>
-<meta name="description" content="Il tuo logbook di MSFS Flight Tracker, letto dal tuo GitHub gist." />
+<meta name="description" content="Il tuo logbook di MSFS Flight Tracker: accedi con email e password, guarda i voli e segui quello in corso sulla mappa." />
 <style>
   :root {
     --bg: #090708;
@@ -122,6 +122,27 @@
   .pill.live { color: var(--green); border-color: #24513a; background: #10231a; }
   .hidden { display: none !important; }
 
+  /* account */
+  .tabs { display: flex; gap: 8px; margin: 2px 0 16px; }
+  .tab {
+    background: transparent; border: 1px solid var(--border); color: var(--muted);
+    border-radius: 999px; padding: 8px 14px; font: inherit; font-size: 11px;
+    letter-spacing: .12em; cursor: pointer;
+  }
+  .tab.on { background: #241a1d; color: var(--text); border-color: #4a2a30; }
+  .account .acc-head { display: flex; gap: 12px; align-items: baseline; margin-bottom: 16px; flex-wrap: wrap; }
+  .account #accEmail { font-family: var(--mono); font-size: 15px; }
+  .acc-forms { display: grid; grid-template-columns: 1fr 1fr; gap: 26px; }
+  .acc-form { display: grid; gap: 8px; align-content: start; }
+  .acc-form label { font-size: 9px; letter-spacing: .18em; color: var(--dim); font-weight: 600; }
+  .acc-form input {
+    background: #0c0a0b; border: 1px solid var(--border); border-radius: 8px;
+    padding: 9px 10px; color: var(--text); font: inherit; font-size: 13px;
+  }
+  .acc-form .btn { justify-self: start; margin-top: 4px; }
+  .btn.danger { color: #ff8a92; border-color: #51262c; }
+  @media (max-width: 760px) { .acc-forms { grid-template-columns: 1fr; } }
+
   /* live flight */
   .live-board { margin: 0 0 22px; }
   .live-head { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; flex-wrap: wrap; }
@@ -172,25 +193,37 @@
     <div class="right">
       <span id="statusPill" class="pill">NON CONNESSO</span>
       <button id="refreshBtn" class="btn ghost hidden" type="button">Aggiorna</button>
-      <button id="signOutBtn" class="btn ghost hidden" type="button">Cambia codice</button>
+      <button id="signOutBtn" class="btn ghost hidden" type="button">Esci</button>
     </div>
   </header>
 
   <section id="loginView" class="panel login hidden">
-    <h1>Il tuo logbook</h1>
-    <p>
-      Incolla il <b>codice logbook</b>: lo trovi nell'app, in <b>Settings › Cloud logbook</b>
-      (pulsante <b>Copy code</b>). Basta una volta, questo browser se lo ricorda.
+    <h1 id="authTitle">Entra nel tuo logbook</h1>
+    <p id="authIntro">
+      Un account per i tuoi voli: gli stessi dati qui e nell'app, il volo in corso sulla mappa
+      e niente token da copiare.
     </p>
-    <div class="field">
-      <label for="code">CODICE LOGBOOK</label>
-      <input id="code" type="text" autocomplete="off" spellcheck="false" placeholder="es. 3f2b9c1d7e8a4f5b6c9d0e1f2a3b4c5d" />
+    <div class="tabs">
+      <button id="tabLogin" class="tab on" type="button">ACCEDI</button>
+      <button id="tabSignup" class="tab" type="button">CREA ACCOUNT</button>
     </div>
-    <button id="connectBtn" class="btn" type="button">Apri il logbook</button>
+    <div class="field">
+      <label for="email">EMAIL</label>
+      <input id="email" type="email" autocomplete="username" spellcheck="false" placeholder="nome@esempio.it" />
+    </div>
+    <div class="field">
+      <label for="password">PASSWORD</label>
+      <input id="password" type="password" autocomplete="current-password" placeholder="almeno 8 caratteri" />
+    </div>
+    <div class="field hidden" id="confirmWrap">
+      <label for="password2">RIPETI LA PASSWORD</label>
+      <input id="password2" type="password" autocomplete="new-password" />
+    </div>
+    <button id="authBtn" class="btn" type="button">Accedi</button>
     <div id="loginError" class="error hidden"></div>
     <p class="hint" style="margin-top:16px">
-      Niente account e niente token: il codice è l'identificativo del logbook che l'app
-      aggiorna a ogni volo. Se cambi browser ti basta incollarlo di nuovo.
+      La password è salvata solo come impronta cifrata (PBKDF2): nessuno, nemmeno il server,
+      può leggerla. Questo browser resta collegato finché non premi «Esci».
     </p>
   </section>
 
@@ -248,9 +281,31 @@
       <div id="empty" class="empty hidden">Nessun volo nel logbook.</div>
     </section>
 
+    <section class="panel account">
+      <h2>ACCOUNT</h2>
+      <div class="acc-head">
+        <span id="accEmail">—</span>
+        <span class="sub">i tuoi voli sono salvati in questo account</span>
+      </div>
+      <div class="acc-forms">
+        <div class="acc-form">
+          <label for="pwdCurrent">PASSWORD ATTUALE</label>
+          <input id="pwdCurrent" type="password" autocomplete="current-password" />
+          <label for="pwdNext">NUOVA PASSWORD</label>
+          <input id="pwdNext" type="password" autocomplete="new-password" placeholder="almeno 8 caratteri" />
+          <button id="pwdBtn" class="btn ghost" type="button">Cambia password</button>
+          <div id="accNote" class="hint"></div>
+        </div>
+        <div class="acc-form">
+          <label>ELIMINA L'ACCOUNT</label>
+          <p class="sub" style="margin:0">Cancella per sempre account, voli e posizione del volo. Non si può annullare.</p>
+          <button id="delBtn" class="btn ghost danger" type="button">Elimina account</button>
+        </div>
+      </div>
+    </section>
+
     <div class="foot">
       <span id="updated"></span>
-      <a id="gistLink" href="#" target="_blank" rel="noopener">Apri il gist su GitHub</a>
       <a href="https://github.com/Federicofnn/msfs-flight-tracker" target="_blank" rel="noopener">MSFS Flight Tracker</a>
     </div>
   </main>
@@ -259,23 +314,14 @@
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
 (() => {
-  const FILE = "msfs-logbook.json";
+  // Accounts live on the tracker server: email, password and one logbook each.
+  const API = "https://msfs-flight-tracker-account-1vxd6r.freebuff.site/api";
   const $ = (id) => document.getElementById(id);
-  /** The code can be the gist id or a whole gist link; only the id matters. */
-  function cleanCode(value) {
-    const text = String(value || "").trim().replace(/[?#].*$/, "").replace(/\/+$/, "");
-    if (!text) return "";
-    const parts = text.split("/").filter(Boolean);
-    return parts.length ? parts[parts.length - 1] : text;
-  }
-
-  const fromUrl = () => {
-    const params = new URLSearchParams(location.search);
-    return params.get("code") || params.get("gist") || location.hash.replace(/^#/, "");
-  };
+  let authMode = "login";
 
   const state = {
-    code: cleanCode(fromUrl() || localStorage.getItem("mft_code") || localStorage.getItem("mft_gist") || ""),
+    token: localStorage.getItem("mft_token") || "",
+    email: localStorage.getItem("mft_email") || "",
     flights: [],
     live: null,
     updated: 0,
@@ -312,7 +358,7 @@
     $("board").classList.add("hidden");
     $("refreshBtn").classList.add("hidden");
     $("signOutBtn").classList.add("hidden");
-    $("code").value = state.code;
+    $("email").value = state.email;
     const box = $("loginError");
     if (message) { box.textContent = message; box.classList.remove("hidden"); }
     else box.classList.add("hidden");
@@ -324,33 +370,116 @@
     $("board").classList.remove("hidden");
     $("refreshBtn").classList.remove("hidden");
     $("signOutBtn").classList.remove("hidden");
-    setStatus("LOGBOOK CARICATO", true);
+    $("accEmail").textContent = state.email || "—";
+    setStatus("CONNESSO", true);
   }
 
-  async function readGist() {
-    const res = await fetch(`https://api.github.com/gists/${encodeURIComponent(state.code)}`, {
-      headers: { Accept: "application/vnd.github+json" },
+  /** Reads the logbook of the signed-in account. */
+  async function readLogbook() {
+    if (!state.token) throw new Error("Accedi per vedere il tuo logbook.");
+    const res = await fetch(`${API}/logbook`, {
+      headers: { authorization: `Bearer ${state.token}` },
     });
-    if (res.status === 404) throw new Error("Codice non trovato: ricopialo dall'app (Settings › Cloud logbook, Copy code).");
-    if (res.status === 403) throw new Error("GitHub ha bloccato le letture per troppe richieste (403). Riprova tra un minuto.");
-    if (!res.ok) throw new Error(`GitHub ha risposto ${res.status}.`);
-    const data = await res.json();
-    const file = data.files && data.files[FILE];
-    if (!file) throw new Error(`Il gist non contiene ${FILE}. Carica il logbook dall'app.`);
-    let content = file.content || "";
-    if (file.truncated && file.raw_url) {
-      const raw = await fetch(file.raw_url);
-      if (!raw.ok) throw new Error("Il logbook è troppo grande e GitHub non ha dato il contenuto completo.");
-      content = await raw.text();
+    if (res.status === 401) {
+      signOut("La sessione è scaduta: accedi di nuovo.");
+      throw new Error("Sessione scaduta.");
     }
-    const parsed = JSON.parse(content);
-    state.flights = Array.isArray(parsed) ? parsed : (parsed.flights || []);
-    state.updated = Number(parsed.updated) || 0;
-    state.live = (!Array.isArray(parsed) && parsed.live) || null;
-    // Keep the picked flight pointing at the refreshed copy.
+    if (!res.ok) throw new Error(`Il server ha risposto ${res.status}.`);
+    const data = await res.json();
+    state.flights = Array.isArray(data.flights) ? data.flights : [];
+    state.live = data.live || null;
+    state.updated = Number(data.updated) || 0;
     state.selected = state.selected
       ? state.flights.find((f) => f.id === state.selected.id) || null
       : null;
+  }
+
+  /** Turns the server's error codes into something a pilot can act on. */
+  function authMessage(data) {
+    const code = (data && data.error) || "";
+    const messages = {
+      email_taken: "Esiste già un account con questa email: usa «Accedi».",
+      bad_credentials: "Email o password sbagliati.",
+      bad_email: "Questa email non sembra valida.",
+      short_password: "La password deve avere almeno 8 caratteri.",
+      too_many: "Troppi tentativi: aspetta qualche minuto e riprova.",
+      unauthorized: "Accedi per continuare.",
+      server_error: "Il server ha avuto un problema: riprova tra poco.",
+    };
+    return messages[code] || (data && data.message) || "Non è stato possibile completare la richiesta.";
+  }
+
+  function setAuthMode(mode) {
+    authMode = mode;
+    $("tabLogin").classList.toggle("on", mode === "login");
+    $("tabSignup").classList.toggle("on", mode === "signup");
+    $("confirmWrap").classList.toggle("hidden", mode !== "signup");
+    $("password").setAttribute("autocomplete", mode === "signup" ? "new-password" : "current-password");
+    $("authTitle").textContent = mode === "signup" ? "Crea il tuo account" : "Entra nel tuo logbook";
+    $("authIntro").textContent = mode === "signup"
+      ? "Bastano email e password: i voli dell'app arrivano qui da soli e il volo in corso si segue sulla mappa."
+      : "Un account per i tuoi voli: gli stessi dati qui e nell'app, il volo in corso sulla mappa e niente token da copiare.";
+    $("authBtn").textContent = mode === "signup" ? "Crea account" : "Accedi";
+    $("loginError").classList.add("hidden");
+  }
+
+  async function submitAuth() {
+    const email = $("email").value.trim();
+    const password = $("password").value;
+    const confirm = $("password2").value;
+    if (!email) { showLogin("Scrivi la tua email."); return; }
+    if (authMode === "signup" && password !== confirm) {
+      showLogin("Le due password non sono uguali.");
+      return;
+    }
+    const button = $("authBtn");
+    button.disabled = true;
+    button.textContent = authMode === "signup" ? "Creo l'account…" : "Entro…";
+    try {
+      const res = await fetch(`${API}/${authMode === "signup" ? "signup" : "login"}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ email, password }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || !data || !data.token) throw new Error(authMessage(data));
+      state.token = data.token;
+      state.email = data.email || email;
+      localStorage.setItem("mft_token", state.token);
+      localStorage.setItem("mft_email", state.email);
+      await readLogbook();
+      showBoard();
+      render();
+      startAuto();
+      $("password").value = "";
+      $("password2").value = "";
+    } catch (err) {
+      showLogin(err.message);
+    } finally {
+      button.disabled = false;
+      button.textContent = authMode === "signup" ? "Crea account" : "Accedi";
+    }
+  }
+
+  function signOut(message) {
+    const token = state.token;
+    if (token) {
+      fetch(`${API}/logout`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}` },
+      }).catch(() => {});
+    }
+    state.token = "";
+    state.email = "";
+    state.flights = [];
+    state.live = null;
+    state.selected = null;
+    state.mapKey = "";
+    localStorage.removeItem("mft_token");
+    localStorage.removeItem("mft_email");
+    if (autoTimer) clearInterval(autoTimer);
+    showLogin(message || "");
+    $("email").value = "";
   }
 
   function render() {
@@ -374,7 +503,6 @@
     $("updated").textContent = state.updated
       ? `Ultimo aggiornamento: ${new Date(state.updated * 1000).toLocaleString("it-IT")}`
       : "";
-    $("gistLink").href = `https://gist.github.com/${state.code}`;
   }
 
   /* ---------- one map for the live flight and for the logbook ---------- */
@@ -637,29 +765,6 @@
     URL.revokeObjectURL(url);
   }
 
-  async function connect() {
-    const code = cleanCode($("code").value);
-    if (!code) { showLogin("Incolla il codice del logbook: lo trovi nell'app, Settings › Cloud logbook."); return; }
-    state.code = code;
-    localStorage.setItem("mft_code", code);
-    localStorage.removeItem("mft_token");
-    localStorage.removeItem("mft_gist");
-    const button = $("connectBtn");
-    button.disabled = true;
-    button.textContent = "Carico…";
-    try {
-      await readGist();
-      showBoard();
-      render();
-      startAuto();
-    } catch (err) {
-      showLogin(err.message);
-    } finally {
-      button.disabled = false;
-      button.textContent = "Apri il logbook";
-    }
-  }
-
   /** Keeps the logbook and the live flight current without a manual reload. */
   let autoTimer = null;
   function startAuto() {
@@ -670,9 +775,9 @@
   }
 
   async function refreshSilently() {
-    if (!state.code) return;
+    if (!state.token) return;
     try {
-      await readGist();
+      await readLogbook();
       render();
       setStatus("AGGIORNATO", true);
     } catch (err) {
@@ -681,14 +786,14 @@
   }
 
   document.addEventListener("visibilitychange", () => {
-    if (!document.hidden && state.code) refreshSilently();
+    if (!document.hidden && state.token) refreshSilently();
   });
 
   async function refresh() {
     const button = $("refreshBtn");
     button.disabled = true;
     try {
-      await readGist();
+      await readLogbook();
       render();
     } catch (err) {
       showLogin(err.message);
@@ -697,7 +802,9 @@
     }
   }
 
-  $("connectBtn").addEventListener("click", connect);
+  $("authBtn").addEventListener("click", submitAuth);
+  $("tabLogin").addEventListener("click", () => setAuthMode("login"));
+  $("tabSignup").addEventListener("click", () => setAuthMode("signup"));
   $("refreshBtn").addEventListener("click", refresh);
   $("csvBtn").addEventListener("click", downloadCsv);
   $("followBtn").addEventListener("click", () => {
@@ -712,20 +819,52 @@
     state.query = event.target.value;
     renderRows(state.flights.slice());
   });
-  $("signOutBtn").addEventListener("click", () => {
-    localStorage.removeItem("mft_code");
-    localStorage.removeItem("mft_token");
-    localStorage.removeItem("mft_gist");
-    state.code = "";
-    state.flights = [];
-    if (history.replaceState) history.replaceState(null, "", location.pathname);
-    showLogin();
-  });
-  $("code").addEventListener("keydown", (event) => { if (event.key === "Enter") connect(); });
+  $("signOutBtn").addEventListener("click", () => signOut());
+  for (const id of ["email", "password", "password2"]) {
+    $(id).addEventListener("keydown", (event) => { if (event.key === "Enter") submitAuth(); });
+  }
 
-  if (state.code) {
-    $("code").value = state.code;
-    connect();
+  $("pwdBtn").addEventListener("click", async () => {
+    const note = $("accNote");
+    const next = $("pwdNext").value;
+    note.textContent = "";
+    if (next.length < 8) {
+      note.textContent = "La nuova password deve avere almeno 8 caratteri.";
+      return;
+    }
+    try {
+      const res = await fetch(`${API}/password`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${state.token}` },
+        body: JSON.stringify({ current: $("pwdCurrent").value, next }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(authMessage(data));
+      $("pwdCurrent").value = "";
+      $("pwdNext").value = "";
+      note.textContent = "Password cambiata: gli altri dispositivi dovranno rientrare.";
+    } catch (err) {
+      note.textContent = err.message;
+    }
+  });
+
+  $("delBtn").addEventListener("click", async () => {
+    if (!confirm("Eliminare l'account e tutti i voli? Non si può annullare.")) return;
+    try {
+      await fetch(`${API}/account`, {
+        method: "DELETE",
+        headers: { authorization: `Bearer ${state.token}` },
+      });
+    } catch (err) {
+      // Signing out locally is the right end state either way.
+    }
+    signOut("Account eliminato.");
+  });
+
+  if (state.token) {
+    readLogbook()
+      .then(() => { showBoard(); render(); startAuto(); })
+      .catch((err) => showLogin(err.message));
   } else {
     showLogin();
   }

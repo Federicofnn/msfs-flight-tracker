@@ -61,13 +61,19 @@ enum NetJob {
     UpdateDownload(update::Release),
     CloudPush {
         token: String,
-        gist: String,
         flights: Vec<FlightRecord>,
         live: Option<serde_json::Value>,
     },
     CloudPull {
         token: String,
-        gist: String,
+    },
+    CloudAuth {
+        email: String,
+        password: String,
+        create: bool,
+    },
+    CloudLogout {
+        token: String,
     },
 }
 
@@ -78,8 +84,10 @@ enum NetDone {
     Weather(Result<weather::Set, String>),
     UpdateCheck(Result<Option<update::Release>, String>),
     UpdateDownload(Result<std::path::PathBuf, String>),
-    CloudPush(Result<String, String>),
+    CloudPush(Result<usize, String>),
     CloudPull(Result<Vec<FlightRecord>, String>),
+    CloudAuth(Result<cloud::Session, String>),
+    CloudLogout,
 }
 
 /// Single worker thread for every network request (SimBrief, aircraft photos).
@@ -111,16 +119,30 @@ fn spawn_net() -> (Sender<NetJob>, Receiver<NetDone>) {
                 }
                 NetJob::CloudPush {
                     token,
-                    gist,
                     flights,
                     live,
                 } => {
-                    let result = cloud::push(&token, &gist, &flights, live.as_ref());
+                    let result = cloud::push(&token, &flights, live.as_ref());
                     let _ = done_tx.send(NetDone::CloudPush(result));
                 }
-                NetJob::CloudPull { token, gist } => {
-                    let result = cloud::pull(&token, &gist);
-                    let _ = done_tx.send(NetDone::CloudPull(result));
+                NetJob::CloudPull { token } => {
+                    let _ = done_tx.send(NetDone::CloudPull(cloud::pull(&token)));
+                }
+                NetJob::CloudAuth {
+                    email,
+                    password,
+                    create,
+                } => {
+                    let result = if create {
+                        cloud::signup(&email, &password)
+                    } else {
+                        cloud::login(&email, &password)
+                    };
+                    let _ = done_tx.send(NetDone::CloudAuth(result));
+                }
+                NetJob::CloudLogout { token } => {
+                    let _ = cloud::logout(&token);
+                    let _ = done_tx.send(NetDone::CloudLogout);
                 }
                 NetJob::UpdateDownload(release) => {
                     let _ = done_tx.send(NetDone::UpdateDownload(update::download(&release)));
@@ -151,6 +173,8 @@ pub struct App {
     pub cloud_status: String,
     pub cloud_error: String,
     pub cloud_busy: bool,
+    /// Typed in Settings for a sign-in, never saved to disk.
+    pub account_password: String,
     photo_for: String,
     pub traffic: traffic::Traffic,
     pub traffic_filter: traffic::Filter,
@@ -223,6 +247,7 @@ impl App {
             cloud_status: String::new(),
             cloud_error: String::new(),
             cloud_busy: false,
+            account_password: String::new(),
             photo_for: String::new(),
             traffic: traffic::Traffic::default(),
             traffic_filter: traffic::Filter::default(),
@@ -502,20 +527,22 @@ impl App {
         if self.cloud_busy {
             return;
         }
+        let token = self.store.settings.account_token.trim().to_string();
+        if token.is_empty() {
+            self.cloud_error = "Sign in to your account first".to_string();
+            return;
+        }
         self.cloud_busy = true;
         self.cloud_error.clear();
         self.cloud_status = if background {
-            "Saving the logbook to GitHub…".to_string()
+            "Saving the logbook to your account…".to_string()
         } else {
             "Uploading the logbook…".to_string()
         };
-        let token = self.store.settings.github_token.trim().to_string();
-        let gist = self.store.settings.github_gist.trim().to_string();
         let flights = self.store.flights.clone();
         let live = self.live_json();
         let job = NetJob::CloudPush {
             token,
-            gist,
             flights,
             live,
         };
@@ -529,16 +556,63 @@ impl App {
         if self.cloud_busy {
             return;
         }
+        let token = self.store.settings.account_token.trim().to_string();
+        if token.is_empty() {
+            self.cloud_error = "Sign in to your account first".to_string();
+            return;
+        }
         self.cloud_busy = true;
         self.cloud_error.clear();
         self.cloud_status = "Downloading the logbook…".to_string();
-        let job = NetJob::CloudPull {
-            token: self.store.settings.github_token.trim().to_string(),
-            gist: self.store.settings.github_gist.trim().to_string(),
+        let job = NetJob::CloudPull { token };
+        if self.net_tx.send(job).is_err() {
+            self.cloud_busy = false;
+            self.cloud_error = "The network worker is not running".to_string();
+        }
+    }
+
+    /// Signs in, or creates the account, with the email and password from Settings.
+    pub fn sign_in(&mut self, create: bool) {
+        if self.cloud_busy {
+            return;
+        }
+        let email = self.store.settings.account_email.trim().to_string();
+        let password = self.account_password.clone();
+        if email.is_empty() || !email.contains('@') {
+            self.cloud_error = "Write your email in Settings first".to_string();
+            return;
+        }
+        if password.chars().count() < 8 {
+            self.cloud_error = "The password needs at least 8 characters".to_string();
+            return;
+        }
+        self.cloud_busy = true;
+        self.cloud_error.clear();
+        self.cloud_status = if create {
+            "Creating the account…".to_string()
+        } else {
+            "Signing in…".to_string()
+        };
+        let job = NetJob::CloudAuth {
+            email,
+            password,
+            create,
         };
         if self.net_tx.send(job).is_err() {
             self.cloud_busy = false;
             self.cloud_error = "The network worker is not running".to_string();
+        }
+    }
+
+    pub fn sign_out(&mut self) {
+        let token = self.store.settings.account_token.trim().to_string();
+        self.store.settings.account_token.clear();
+        self.account_password.clear();
+        self.store.save_settings();
+        self.cloud_status = "Signed out".to_string();
+        self.cloud_error.clear();
+        if !token.is_empty() {
+            let _ = self.net_tx.send(NetJob::CloudLogout { token });
         }
     }
 
@@ -599,13 +673,7 @@ impl App {
 
     pub fn open_site(&self) {
         // The code in the link means the site opens the logbook straight away.
-        let gist = self.store.settings.github_gist.trim();
-        let url = if gist.is_empty() {
-            "https://federicofnn.github.io/msfs-flight-tracker/".to_string()
-        } else {
-            format!("https://federicofnn.github.io/msfs-flight-tracker/#{gist}")
-        };
-        Self::open_external(&url);
+        Self::open_external("https://federicofnn.github.io/msfs-flight-tracker/");
     }
 
     pub fn check_updates(&mut self, manual: bool) {
@@ -773,7 +841,7 @@ impl App {
             Ok(_) => {
                 self.toast_msg(format!("Flight saved — {label}"));
                 if self.store.settings.sync_auto
-                    && !self.store.settings.github_token.trim().is_empty()
+                    && !self.store.settings.account_token.trim().is_empty()
                 {
                     self.push_cloud(true);
                 }
@@ -955,23 +1023,37 @@ impl App {
                 NetDone::CloudPush(result) => {
                     self.cloud_busy = false;
                     match result {
-                        Ok(id) => {
-                            if self.store.settings.github_gist != id {
-                                self.store.settings.github_gist = id;
-                                self.store.save_settings();
-                            }
-                            self.cloud_status = format!(
-                                "{} flights saved on GitHub",
-                                self.store.flights.len()
-                            );
+                        Ok(count) => {
+                            self.cloud_status =
+                                format!("{count} flights saved in your account");
                         }
                         Err(err) => {
                             self.cloud_error = err.clone();
                             self.cloud_status.clear();
-                            self.toast_err(format!("Cloud sync: {err}"));
+                            self.toast_err(format!("Account: {err}"));
                         }
                     }
                 }
+                NetDone::CloudAuth(result) => {
+                    self.cloud_busy = false;
+                    match result {
+                        Ok(session) => {
+                            self.store.settings.account_token = session.token;
+                            self.store.settings.account_email = session.email.clone();
+                            self.account_password.clear();
+                            self.store.save_settings();
+                            self.cloud_error.clear();
+                            self.cloud_status = format!("Signed in as {}", session.email);
+                            self.pull_cloud();
+                        }
+                        Err(err) => {
+                            self.cloud_error = err.clone();
+                            self.cloud_status.clear();
+                            self.toast_err(format!("Account: {err}"));
+                        }
+                    }
+                }
+                NetDone::CloudLogout => {}
                 NetDone::CloudPull(result) => {
                     self.cloud_busy = false;
                     match result {
@@ -990,7 +1072,7 @@ impl App {
                                 }
                             }
                             self.cloud_status = format!(
-                                "{added} new flights from GitHub ({remote} in the cloud)"
+                                "{added} new flights from your account ({remote} saved online)"
                             );
                         }
                         Err(err) => {
@@ -1045,9 +1127,8 @@ impl App {
 
         // The website follows the flight while it is in progress: a light
         // update every couple of minutes keeps it current without hammering
-        // the GitHub API.
-        if !self.store.settings.github_token.trim().is_empty()
-            && !self.store.settings.github_gist.trim().is_empty()
+        // the account server.
+        if !self.store.settings.account_token.trim().is_empty()
             && (self.recorder.active || (self.fresh() && self.plan.is_some()))
             && !self.cloud_busy
             && Instant::now() >= self.live_next
@@ -1567,7 +1648,7 @@ fn main() -> eframe::Result {
 }
 
 /// A compact copy of a path for the website map: never more than `max` points
-/// and always the real last one, so a long flight does not bloat the gist.
+/// and always the real last one, so a long flight does not bloat the upload.
 fn sampled_path(points: &[(f64, f64)], max: usize) -> Vec<[f64; 2]> {
     if points.is_empty() || max < 2 {
         return Vec::new();

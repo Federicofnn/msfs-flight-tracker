@@ -3283,54 +3283,81 @@ impl App {
         });
 
         ui.add_space(12.0);
-        card(ui, "Cloud logbook (GitHub)", |ui| {
-            let mut changed = false;
+        card(ui, "Account", |ui| {
             ui.label(
                 RichText::new(
-                    "The same logbook here and on the website. Flights are stored in a public \
-                     gist of your GitHub account: whoever has the logbook code can read it, and \
-                     nothing passes through a server of ours.",
+                    "Your logbook lives in your account: the same flights here and on the website, \
+                     and the website follows the flight you are flying right now. Email and \
+                     password, no tokens.",
                 )
                 .size(10.5)
                 .color(DIM),
             );
-            ui.add_space(6.0);
+            ui.add_space(8.0);
+            let signed_in = !self.store.settings.account_token.trim().is_empty();
             ui.horizontal(|ui| {
-                ui.label(RichText::new("GitHub token").size(11.5).color(MUTED));
-                if ui
-                    .add(
-                        egui::TextEdit::singleline(&mut self.store.settings.github_token)
-                            .password(true)
-                            .desired_width(300.0)
-                            .hint_text("classic token with the gist scope"),
-                    )
-                    .changed()
-                {
-                    changed = true;
-                }
+                ui.label(RichText::new("Email").size(11.5).color(MUTED));
+                ui.add_enabled(
+                    !signed_in,
+                    egui::TextEdit::singleline(&mut self.store.settings.account_email)
+                        .desired_width(300.0)
+                        .hint_text("nome@esempio.it"),
+                );
             });
             ui.horizontal(|ui| {
-                ui.label(RichText::new("Logbook code").size(11.5).color(MUTED));
-                if ui
-                    .add(
-                        egui::TextEdit::singleline(&mut self.store.settings.github_gist)
-                            .desired_width(300.0)
-                            .hint_text("created by the first upload"),
-                    )
-                    .changed()
-                {
-                    changed = true;
-                }
-                if ui.button("Copy code").clicked() {
-                    let code = self.store.settings.github_gist.trim().to_string();
-                    if code.is_empty() {
-                        self.cloud_error =
-                            "Upload the logbook first: the code appears here".to_string();
-                    } else {
-                        ui.ctx().copy_text(code.clone());
-                        self.cloud_status =
-                            format!("Code {code} copied: paste it once on the website");
+                ui.label(RichText::new("Password").size(11.5).color(MUTED));
+                ui.add_enabled(
+                    !signed_in,
+                    egui::TextEdit::singleline(&mut self.account_password)
+                        .password(true)
+                        .desired_width(300.0)
+                        .hint_text("almeno 8 caratteri"),
+                );
+            });
+            if signed_in {
+                ui.label(
+                    RichText::new(format!(
+                        "Signed in as {}",
+                        self.store.settings.account_email
+                    ))
+                    .size(11.0)
+                    .color(GREEN),
+                );
+            }
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                if signed_in {
+                    if ui
+                        .add_enabled(!self.cloud_busy, egui::Button::new("Upload logbook"))
+                        .clicked()
+                    {
+                        self.push_cloud(false);
                     }
+                    if ui
+                        .add_enabled(!self.cloud_busy, egui::Button::new("Download logbook"))
+                        .clicked()
+                    {
+                        self.pull_cloud();
+                    }
+                    if ui.button("Sign out").clicked() {
+                        self.sign_out();
+                    }
+                } else {
+                    if ui
+                        .add_enabled(!self.cloud_busy, egui::Button::new("Sign in"))
+                        .clicked()
+                    {
+                        self.sign_in(false);
+                    }
+                    if ui
+                        .add_enabled(!self.cloud_busy, egui::Button::new("Create account"))
+                        .clicked()
+                    {
+                        self.sign_in(true);
+                    }
+                }
+                if ui.button("Open the website").clicked() {
+                    self.open_site();
                 }
             });
             if ui
@@ -3340,36 +3367,8 @@ impl App {
                 )
                 .changed()
             {
-                changed = true;
-            }
-            if changed {
                 self.store.save_settings();
             }
-            ui.add_space(6.0);
-            ui.horizontal(|ui| {
-                if ui
-                    .add_enabled(
-                        !self.cloud_busy,
-                        egui::Button::new(if self.cloud_busy {
-                            "Working…"
-                        } else {
-                            "Upload logbook"
-                        }),
-                    )
-                    .clicked()
-                {
-                    self.push_cloud(false);
-                }
-                if ui
-                    .add_enabled(!self.cloud_busy, egui::Button::new("Download logbook"))
-                    .clicked()
-                {
-                    self.pull_cloud();
-                }
-                if ui.button("Open the website").clicked() {
-                    self.open_site();
-                }
-            });
             if !self.cloud_status.is_empty() {
                 ui.label(RichText::new(&self.cloud_status).size(10.5).color(MUTED));
             }
@@ -3378,9 +3377,9 @@ impl App {
             }
             ui.label(
                 RichText::new(
-                    "The token is only for this app (github.com/settings/tokens → classic token \
-                     with the gist scope) and stays in settings.json. The website needs no login: \
-                     it opens the logbook with the code, asked once and remembered.",
+                    "The password is only sent to create the account or to sign in; then just the \
+                     session is kept in settings.json. The same email and password open the \
+                     website, where the logbook and the live flight are shown.",
                 )
                 .size(9.5)
                 .color(DIM),
