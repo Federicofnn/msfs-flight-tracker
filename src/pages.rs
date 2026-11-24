@@ -4,7 +4,9 @@ use crate::flight::{Landing, Phase};
 use crate::plan::FlightPlan;
 use crate::sim::{LinkState, Telemetry};
 use crate::theme::*;
-use crate::util::{fmt_clock, fmt_duration, fmt_utc, fmt_utc_full, fmt_zulu_hhmm, haversine_nm, num, now_epoch};
+use crate::util::{
+    fmt_clock, fmt_duration, fmt_local_hhmm, fmt_utc, fmt_utc_full, haversine_nm, num, now_epoch,
+};
 use crate::widgets::{self, card, kv, landing_bars, metric, pill, profile, progress};
 use crate::traffic;
 use crate::update;
@@ -43,19 +45,25 @@ fn caps(ui: &mut Ui, text: &str, color: Color32, size: f32) {
     );
 }
 
-fn tele_row(ui: &mut Ui, label: &str, value: String, unit: &str) {
-    ui.horizontal(|ui| {
-        ui.label(RichText::new(label).size(8.5).color(DIM).strong());
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            ui.label(RichText::new(unit).size(8.0).color(DIM));
-            ui.label(
-                RichText::new(value)
-                    .size(10.5)
-                    .family(egui::FontFamily::Monospace)
-                    .color(TEXT),
-            );
+/// A compact readout inside the floating flight card.
+fn chip_stat(ui: &mut Ui, label: &str, value: &str, unit: &str, color: Color32) {
+    egui::Frame::new()
+        .fill(Color32::from_rgb(28, 22, 25))
+        .corner_radius(CornerRadius::same(8))
+        .inner_margin(egui::Margin::symmetric(8, 5))
+        .show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            ui.label(RichText::new(label).size(7.5).color(DIM).strong());
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new(value)
+                        .size(12.0)
+                        .family(egui::FontFamily::Monospace)
+                        .color(color),
+                );
+                ui.label(RichText::new(unit).size(7.0).color(DIM));
+            });
         });
-    });
 }
 
 fn map_chip(ui: &mut Ui, value: &str, label: &str) {
@@ -385,7 +393,92 @@ fn landing_banner(ui: &mut Ui, landing: &Landing) -> bool {
     dismiss
 }
 
+/// Where the flight is along its route, and when it gets there: every screen
+/// reads its times from here so they can never disagree.
+#[derive(Clone, Copy)]
+pub struct Trip {
+    pub total_nm: f64,
+    pub remaining_nm: f64,
+    pub fraction: f64,
+    pub speed_kt: f64,
+    pub ete_s: f64,
+    pub eta_epoch: u64,
+    pub known: bool,
+}
+
+impl Trip {
+    /// Arrival time on the pilot's own clock.
+    pub fn arrival(&self) -> String {
+        if self.known {
+            fmt_local_hhmm(self.eta_epoch)
+        } else {
+            "--:--".to_string()
+        }
+    }
+
+    /// "2h 57m" left, or a dash while there is no route.
+    pub fn time_to_go(&self) -> String {
+        if self.known {
+            fmt_duration(self.ete_s)
+        } else {
+            "—".to_string()
+        }
+    }
+}
+
 impl App {
+    /// Route progress and arrival, from live speed when the aircraft is moving
+    /// and from the plan average otherwise, so the ETA never collapses to "—".
+    pub fn trip(&self, t: &Telemetry, plan: &FlightPlan, fresh: bool) -> Trip {
+        let total = plan.total_nm();
+        let flying = fresh && t.position_valid();
+        let remaining = if flying {
+            plan.remaining_nm(t.lat, t.lon).unwrap_or(total)
+        } else {
+            total
+        };
+        let remaining = if remaining.is_finite() {
+            remaining.clamp(0.0, total.max(0.0))
+        } else {
+            total
+        };
+        let planned = self
+            .planned_ete()
+            .filter(|seconds| seconds.is_finite() && *seconds > 0.0);
+        let speed = if flying && self.gs_smooth > 60.0 {
+            self.gs_smooth
+        } else if fresh && t.tas_kt.is_finite() && t.tas_kt > 80.0 {
+            t.tas_kt
+        } else if let Some(seconds) = planned.filter(|_| total > 1.0) {
+            (total / seconds * 3600.0).clamp(120.0, 620.0)
+        } else {
+            430.0
+        };
+        let ete_s = if total > 1.0 && speed > 40.0 {
+            remaining / speed * 3600.0
+        } else {
+            f64::NAN
+        };
+        let known = ete_s.is_finite() && ete_s >= 0.0 && total > 1.0;
+        Trip {
+            total_nm: total,
+            remaining_nm: remaining,
+            fraction: if total > 0.5 {
+                (1.0 - remaining / total).clamp(0.0, 1.0)
+            } else {
+                0.0
+            },
+            speed_kt: speed,
+            ete_s,
+            eta_epoch: if known {
+                now_epoch() + ete_s.max(0.0).round() as u64
+            } else {
+                0
+            },
+            known,
+        }
+    }
+
     pub fn dashboard(&mut self, ui: &mut Ui) {
         let t = self.tele.clone();
         let fresh = self.fresh();
@@ -420,6 +513,12 @@ impl App {
         });
 
         ui.add_space(12.0);
+
+        // The route card is the hero of the screen, exactly as on the map.
+        if let Some(plan) = self.plan.clone() {
+            self.route_card(ui, &plan, &t, fresh);
+            ui.add_space(12.0);
+        }
 
         let dash = "—".to_string();
         let ias = if fresh { num(t.ias_kt, 0) } else { dash.clone() };
@@ -585,38 +684,16 @@ impl App {
             });
         });
 
-        if let Some(plan) = self.plan.clone() {
-            ui.add_space(12.0);
-            self.route_card(ui, &plan, &t, fresh);
-        }
     }
 
     fn route_card(&mut self, ui: &mut Ui, plan: &FlightPlan, t: &Telemetry, fresh: bool) {
-        let total = plan.total_nm();
-        let remaining = if fresh && t.position_valid() {
-            plan.remaining_nm(t.lat, t.lon).unwrap_or(total)
-        } else {
-            total
-        };
-        let fraction = if total > 0.0 {
-            (1.0 - remaining / total).clamp(0.0, 1.0)
-        } else {
-            0.0
-        };
-        let gs = self.gs_smooth;
-        let planned = self.planned_ete();
-        let ete = if gs > 40.0 {
-            remaining / gs * 3600.0
-        } else {
-            planned.unwrap_or(f64::NAN)
-        };
-        let eta = if ete.is_finite() {
-            fmt_zulu_hhmm(now_epoch() + ete.max(0.0) as u64)
-        } else {
-            "--:--Z".to_string()
-        };
+        let trip = self.trip(t, plan, fresh);
+        let remaining = trip.remaining_nm;
+        let fraction = trip.fraction;
+        let gs = trip.speed_kt;
+        let ete = trip.ete_s;
+        let eta = trip.arrival();
         let tod = plan.tod_nm(t.alt_ft);
-        let tod_time = if gs > 40.0 { tod / gs * 3600.0 } else { f64::NAN };
         let fuel_at_dest = t.fuel_kg - self.burn_kg_h * (ete / 3600.0).max(0.0);
 
         card(ui, "Route progress", |ui| {
@@ -648,33 +725,25 @@ impl App {
             progress(ui, fraction, CYAN);
             ui.add_space(10.0);
             ui.columns(4, |cols| {
+                stat_tile(&mut cols[0], "Arrivo (ora locale)", &eta, "", ACCENT);
                 stat_tile(
-                    &mut cols[0],
-                    "To destination",
+                    &mut cols[1],
+                    "Tra quanto arrivo",
+                    &trip.time_to_go(),
+                    "",
+                    CYAN,
+                );
+                stat_tile(
+                    &mut cols[2],
+                    "A destinazione",
                     &num(remaining, 0),
                     "NM",
                     TEXT,
                 );
                 stat_tile(
-                    &mut cols[1],
-                    "Time enroute",
-                    &if ete.is_finite() {
-                        fmt_clock(ete)
-                    } else {
-                        "--:--".into()
-                    },
-                    "",
-                    CYAN,
-                );
-                stat_tile(&mut cols[2], "ETA (zulu)", &eta, "", ACCENT);
-                stat_tile(
                     &mut cols[3],
                     "Top of descent",
-                    &if tod_time.is_finite() {
-                        format!("{:.0} NM", tod)
-                    } else {
-                        "—".into()
-                    },
+                    &format!("{:.0} NM", tod),
                     "",
                     MUTED,
                 );
@@ -694,6 +763,22 @@ impl App {
                     .size(11.0)
                     .color(MUTED),
                 );
+                ui.add_space(4.0);
+                ui.label(RichText::new("METAR").size(8.5).color(DIM).strong());
+                if ui
+                    .small_button(format!("{} partenza ↗", plan.origin))
+                    .on_hover_text("METAR, TAF e meteo su metar-taf.com")
+                    .clicked()
+                {
+                    App::open_metar(&plan.origin);
+                }
+                if ui
+                    .small_button(format!("{} arrivo ↗", plan.dest))
+                    .on_hover_text("METAR, TAF e meteo su metar-taf.com")
+                    .clicked()
+                {
+                    App::open_metar(&plan.dest);
+                }
                 if t.fuel_kg.is_finite() && fuel_at_dest.is_finite() {
                     ui.label(
                         RichText::new(format!(
@@ -923,18 +1008,10 @@ impl App {
             );
             ui.vertical(|ui| {
                 card(ui, "Live navigation", |ui| {
-                    let total = plan.total_nm();
-                    let remaining = if fresh && t.position_valid() {
-                        plan.remaining_nm(t.lat, t.lon).unwrap_or(total)
-                    } else {
-                        total
-                    };
-                    let gs = self.gs_smooth;
-                    let ete = if gs > 40.0 {
-                        remaining / gs * 3600.0
-                    } else {
-                        self.planned_ete().unwrap_or(f64::NAN)
-                    };
+                    let trip = self.trip(&t, &plan, fresh);
+                    let remaining = trip.remaining_nm;
+                    let gs = trip.speed_kt;
+                    let ete = trip.ete_s;
                     let next = if fresh && t.position_valid() {
                         plan.next_waypoint(t.lat, t.lon).map(|w| w.id.clone())
                     } else {
@@ -966,20 +1043,8 @@ impl App {
                         "Ground speed",
                         &format!("{} kt", num(gs, 0)),
                     );
-                    kv(
-                        ui,
-                        "Time enroute",
-                        &if ete.is_finite() { fmt_clock(ete) } else { "--:--".into() },
-                    );
-                    kv(
-                        ui,
-                        "ETA",
-                        &if ete.is_finite() {
-                            fmt_zulu_hhmm(now_epoch() + ete.max(0.0) as u64)
-                        } else {
-                            "--:--Z".to_string()
-                        },
-                    );
+                    kv(ui, "Tra quanto arrivo", &trip.time_to_go());
+                    kv(ui, "Arrivo (locale)", &trip.arrival());
                     kv(
                         ui,
                         "Fuel at destination",
@@ -1008,6 +1073,57 @@ impl App {
                     );
                 });
             });
+        });
+
+        ui.add_space(12.0);
+        card(ui, "METAR & TAF", |ui| {
+            ui.label(
+                RichText::new(
+                    "Meteo reale degli aeroporti della rotta, su metar-taf.com (edizione italiana).",
+                )
+                .size(11.5)
+                .color(MUTED),
+            );
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if ui
+                    .button(format!("{} partenza ↗", plan.origin))
+                    .on_hover_text("METAR, TAF e meteo di partenza")
+                    .clicked()
+                {
+                    App::open_metar(&plan.origin);
+                }
+                if ui
+                    .button(format!("{} arrivo ↗", plan.dest))
+                    .on_hover_text("METAR, TAF e meteo di arrivo")
+                    .clicked()
+                {
+                    App::open_metar(&plan.dest);
+                }
+            });
+            if let Some(briefing) = &self.briefing {
+                for (icao, text) in [
+                    (plan.origin.clone(), briefing.origin_metar.clone()),
+                    (plan.dest.clone(), briefing.dest_metar.clone()),
+                ] {
+                    if text.trim().is_empty() {
+                        continue;
+                    }
+                    ui.add_space(8.0);
+                    ui.label(
+                        RichText::new(format!("{icao} · METAR"))
+                            .size(9.0)
+                            .color(DIM)
+                            .strong(),
+                    );
+                    ui.label(
+                        RichText::new(text.trim())
+                            .size(11.0)
+                            .family(egui::FontFamily::Monospace)
+                            .color(MUTED),
+                    );
+                }
+            }
         });
     }
 
@@ -1164,7 +1280,7 @@ impl App {
                     widgets::pill(ui, link_text, link_color);
                     ui.add_space(6.0);
                     ui.label(
-                        RichText::new(fmt_zulu_hhmm(now_epoch()))
+                        RichText::new(fmt_local_hhmm(now_epoch()))
                             .size(11.5)
                             .family(egui::FontFamily::Monospace)
                             .color(MUTED),
@@ -1253,14 +1369,15 @@ impl App {
         } else {
             "----".to_string()
         };
-        let card_w = 324.0;
+        let trip = plan.as_ref().map(|plan| self.trip(&t, plan, fresh));
+        let card_w = 378.0;
         let card_rect = egui::Rect::from_min_size(
             egui::pos2(rect.left() + 90.0, rect.top() + 72.0),
-            egui::vec2(
-                card_w,
-                (rect.bottom() - rect.top() - 138.0).clamp(380.0, 524.0),
+            egui::vec2                (card_w,
+                (rect.bottom() - rect.top() - 132.0).clamp(400.0, 552.0),
             ),
         );
+        let mut metar: Option<String> = None;
         let photo = self.photo.clone();
         let photo_status = self.photo_status.clone();
         let photo_hint = self.photo_lookup();
@@ -1277,18 +1394,18 @@ impl App {
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     ui.label(
                         RichText::new(&squawk)
-                            .size(10.0)
+                            .size(12.0)
                             .family(egui::FontFamily::Monospace)
-                            .color(if fresh { GREEN } else { MUTED }),
+                            .color(if squawk == "----" { MUTED } else { GREEN }),
                     );
-                    ui.label(RichText::new("SQUAWK").size(8.5).color(DIM).strong());
+                    ui.label(RichText::new("XPDR").size(8.5).color(DIM).strong());
                 });
             });
 
             ui.add_space(12.0);
             ui.label(
                 RichText::new(&callsign)
-                    .size(27.0)
+                    .size(31.0)
                     .strong()
                     .family(egui::FontFamily::Proportional)
                     .color(TEXT),
@@ -1304,7 +1421,7 @@ impl App {
                 ui.add_space(10.0);
                 let size = texture.size_vec2();
                 let width = card_w - 30.0;
-                let scale = (width / size.x.max(1.0)).min(86.0 / size.y.max(1.0));
+                let scale = (width / size.x.max(1.0)).min(104.0 / size.y.max(1.0));
                 ui.add(
                     egui::Image::from_texture(texture)
                         .fit_to_exact_size(size * scale)
@@ -1357,184 +1474,163 @@ impl App {
                     }
                 });
             });
-            ui.add_space(2.0);
+            let origin = plan
+                .as_ref()
+                .map(|p| p.origin.clone())
+                .unwrap_or_else(|| "----".to_string());
+            let dest = plan
+                .as_ref()
+                .map(|p| p.dest.clone())
+                .unwrap_or_else(|| "----".to_string());
+            let (dep, arr, to_go, fraction) = match trip {
+                Some(trip) => (
+                    if self.recorder.active {
+                        fmt_local_hhmm(self.recorder.started_epoch())
+                    } else {
+                        "--:--".to_string()
+                    },
+                    trip.arrival(),
+                    trip.time_to_go(),
+                    trip.fraction,
+                ),
+                None => (
+                    "--:--".to_string(),
+                    "--:--".to_string(),
+                    "—".to_string(),
+                    0.0,
+                ),
+            };
+            ui.add_space(6.0);
             ui.horizontal(|ui| {
-                let origin = plan
-                    .as_ref()
-                    .map(|p| p.origin.clone())
-                    .unwrap_or_else(|| "----".to_string());
-                let dest = plan
-                    .as_ref()
-                    .map(|p| p.dest.clone())
-                    .unwrap_or_else(|| "----".to_string());
                 ui.vertical(|ui| {
-                    ui.label(RichText::new("FROM").size(8.0).color(DIM).strong());
                     ui.label(
-                        RichText::new(origin)
-                            .size(16.0)
+                        RichText::new(&origin)
+                            .size(20.0)
                             .strong()
                             .family(egui::FontFamily::Monospace)
                             .color(TEXT),
                     );
-                });
-                ui.add_space(8.0);
-                widgets::arrow_right(ui, DIM);
-                ui.add_space(8.0);
-                ui.vertical(|ui| {
-                    ui.label(RichText::new("TO").size(8.0).color(DIM).strong());
                     ui.label(
-                        RichText::new(dest)
-                            .size(16.0)
+                        RichText::new(format!("PARTENZA {dep}"))
+                            .size(8.5)
+                            .color(MUTED),
+                    );
+                });
+                ui.add_space(6.0);
+                widgets::arrow_right(ui, DIM);
+                ui.add_space(6.0);
+                ui.vertical(|ui| {
+                    ui.label(
+                        RichText::new(&dest)
+                            .size(20.0)
                             .strong()
                             .family(egui::FontFamily::Monospace)
                             .color(TEXT),
+                    );
+                    ui.label(
+                        RichText::new(format!("ARRIVO {arr}"))
+                            .size(8.5)
+                            .color(ACCENT),
                     );
                 });
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if plan.is_none() {
-                        ui.label(RichText::new("LOAD A PLAN").size(8.0).color(DIM));
-                    }
+                    ui.vertical(|ui| {
+                        ui.label(RichText::new("TRA").size(8.0).color(DIM).strong());
+                        ui.label(
+                            RichText::new(&to_go)
+                                .size(12.5)
+                                .family(egui::FontFamily::Monospace)
+                                .color(TEXT),
+                        );
+                    });
                 });
+            });
+            ui.add_space(6.0);
+            progress(ui, fraction, CYAN);
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new(format!("{:.0}%", fraction * 100.0))
+                        .size(9.0)
+                        .color(ACCENT),
+                );
+                ui.add_space(4.0);
+                if ui
+                    .small_button(format!("METAR {origin}"))
+                    .on_hover_text("METAR e TAF su metar-taf.com")
+                    .clicked()
+                {
+                    metar = Some(origin.clone());
+                }
+                if ui
+                    .small_button(format!("METAR {dest}"))
+                    .on_hover_text("METAR e TAF su metar-taf.com")
+                    .clicked()
+                {
+                    metar = Some(dest.clone());
+                }
             });
 
             ui.add_space(10.0);
-            caps(ui, "TELEMETRY", MUTED, 8.5);
-            ui.add_space(2.0);
             let dash = || "----".to_string();
-            tele_row(
-                ui,
-                "GROUND SPEED",
-                if fresh { num(t.gs_kt, 0) } else { dash() },
-                "kt",
-            );
-            tele_row(
-                ui,
-                "ALTITUDE",
-                if fresh {
-                    num(self.alt_val(t.alt_ft), 0)
-                } else {
-                    dash()
-                },
-                self.alt_unit(),
-            );
-            tele_row(
-                ui,
-                "HEADING",
-                if fresh {
-                    format!("{:03.0}", t.hdg_mag)
-                } else {
-                    dash()
-                },
-                "°",
-            );
-            tele_row(
-                ui,
-                "VERT. SPEED",
-                if fresh {
-                    num(self.vs_val(t.vs_fpm), 0)
-                } else {
-                    dash()
-                },
-                self.vs_unit(),
-            );
-
-            ui.add_space(6.0);
-            {
-                let (row, _) =
-                    ui.allocate_exact_size(egui::vec2(ui.available_width(), 24.0), Sense::hover());
-                let painter = ui.painter();
-                let dot = if fresh {
-                    GREEN
-                } else {
-                    Color32::from_rgb(78, 62, 65)
-                };
-                painter.circle_filled(row.left_center() + egui::vec2(4.0, 0.0), 3.2, dot);
-                painter.text(
-                    row.left_center() + egui::vec2(13.0, 0.0),
-                    egui::Align2::LEFT_CENTER,
-                    status_text,
-                    egui::FontId::proportional(8.5),
-                    if fresh { TEXT } else { MUTED },
-                );
-                let (eta, ete) = self.eta_ete(&t, plan.as_ref(), fresh);
-                painter.text(
-                    row.right_top() + egui::vec2(-2.0, 1.0),
-                    egui::Align2::RIGHT_TOP,
-                    "ETA",
-                    egui::FontId::proportional(7.5),
-                    DIM,
-                );
-                painter.text(
-                    row.right_bottom() + egui::vec2(-2.0, 2.0),
-                    egui::Align2::RIGHT_BOTTOM,
-                    eta,
-                    egui::FontId::monospace(9.5),
-                    TEXT,
-                );
-                painter.text(
-                    row.right_top() + egui::vec2(-62.0, 1.0),
-                    egui::Align2::RIGHT_TOP,
-                    "ETE",
-                    egui::FontId::proportional(7.5),
-                    DIM,
-                );
-                painter.text(
-                    row.right_bottom() + egui::vec2(-62.0, 2.0),
-                    egui::Align2::RIGHT_BOTTOM,
-                    ete,
-                    egui::FontId::monospace(9.5),
-                    TEXT,
-                );
-            }
+            let vs_color = if !fresh {
+                MUTED
+            } else if t.vs_fpm > 100.0 {
+                GREEN
+            } else if t.vs_fpm < -100.0 {
+                ORANGE
+            } else {
+                TEXT
+            };
+            let gs_text = if fresh { num(t.gs_kt, 0) } else { dash() };
+            let alt_text = if fresh {
+                num(self.alt_val(t.alt_ft), 0)
+            } else {
+                dash()
+            };
+            let vs_text = if fresh {
+                num(self.vs_val(t.vs_fpm), 0)
+            } else {
+                dash()
+            };
+            let hdg_text = if fresh {
+                format!("{:03.0}", t.hdg_mag)
+            } else {
+                dash()
+            };
+            ui.columns(4, |cols| {
+                chip_stat(&mut cols[0], "GS", &gs_text, "kt", TEXT);
+                chip_stat(&mut cols[1], "ALT", &alt_text, self.alt_unit(), ACCENT);
+                chip_stat(&mut cols[2], "V/S", &vs_text, self.vs_unit(), vs_color);
+                chip_stat(&mut cols[3], "HDG", &hdg_text, "°", BLUE);
+            });
 
             ui.add_space(8.0);
-            caps(ui, "WEATHER", MUTED, 8.5);
-            ui.add_space(2.0);
-            tele_row(
-                ui,
-                "OAT",
-                if fresh { format!("{:.0}", t.oat_c) } else { dash() },
-                "°C",
-            );
-            tele_row(
-                ui,
-                "WIND",
-                if fresh {
-                    format!("{:03.0}/{:.0}", t.wind_dir, t.wind_kt)
+            ui.horizontal(|ui| {
+                let (dot, _) =
+                    ui.allocate_exact_size(egui::vec2(9.0, 9.0), Sense::hover());
+                ui.painter().circle_filled(
+                    dot.center(),
+                    3.0,
+                    if fresh {
+                        GREEN
+                    } else {
+                        Color32::from_rgb(78, 62, 65)
+                    },
+                );
+                ui.label(RichText::new(status_text).size(8.5).color(if fresh { TEXT } else { MUTED }));
+                let weather = if fresh {
+                    format!(
+                        "OAT {:.0}°C · WIND {:03.0}/{:.0}",
+                        t.oat_c, t.wind_dir, t.wind_kt
+                    )
                 } else {
-                    dash()
-                },
-                "° / kt",
-            );
-            let (head, cross) = if fresh {
-                let relative = (t.wind_dir - t.hdg_mag).to_radians();
-                (
-                    t.wind_kt * relative.cos(),
-                    t.wind_kt * relative.sin(),
-                )
-            } else {
-                (f64::NAN, f64::NAN)
-            };
-            tele_row(
-                ui,
-                "H/T WIND",
-                if head.is_finite() {
-                    format!("{} {:.0}", if head >= 0.0 { "H" } else { "T" }, head.abs())
-                } else {
-                    dash()
-                },
-                "kt",
-            );
-            tele_row(
-                ui,
-                "CROSSWIND",
-                if cross.is_finite() {
-                    format!("{} {:.0}", if cross >= 0.0 { "R" } else { "L" }, cross.abs())
-                } else {
-                    dash()
-                },
-                "kt",
-            );
+                    "OAT — · WIND —".to_string()
+                };
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    ui.label(RichText::new(weather).size(8.5).color(MUTED));
+                });
+            });
         });
         if retry {
             let ctx = ui.ctx().clone();
@@ -1543,11 +1639,16 @@ impl App {
 
         // -------------------------------------------------------- map filters
         let panel_w = 336.0;
+        let mut filters_open = self.map_filters_open;
         let panel_rect = egui::Rect::from_min_size(
             egui::pos2(rect.right() - panel_w - 92.0, rect.top() + 72.0),
             egui::vec2(
                 panel_w,
-                (rect.bottom() - rect.top() - 132.0).clamp(390.0, 552.0),
+                if filters_open {
+                    (rect.bottom() - rect.top() - 132.0).clamp(390.0, 552.0)
+                } else {
+                    50.0
+                },
             ),
         );
         let mut tab = self.map_filter_tab.min(2) as usize;
@@ -1564,13 +1665,31 @@ impl App {
         let filter_was_active = filter.active();
         overlay(ui, panel_rect, |ui| {
             ui.horizontal(|ui| {
+                let arrow = if filters_open { "-" } else { "+" };
+                if ui
+                    .small_button(arrow)
+                    .on_hover_text(if filters_open {
+                        "Nascondi il pannello dei filtri"
+                    } else {
+                        "Mostra il pannello dei filtri"
+                    })
+                    .clicked()
+                {
+                    filters_open = !filters_open;
+                }
                 ui.label(RichText::new("Map Filters").size(15.0).strong().color(TEXT));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if ui.small_button("FIT").on_hover_text("Recentre the map").clicked() {
                         recenter = true;
                     }
+                    if !filters_open {
+                        ui.label(RichText::new("nascosto").size(9.0).color(DIM));
+                    }
                 });
             });
+            if !filters_open {
+                return;
+            }
             ui.add_space(10.0);
             segmented(ui, &mut tab, &["ALL", "TRAFFIC", "LAYERS"]);
             ui.add_space(12.0);
@@ -1739,6 +1858,7 @@ impl App {
             }
         });
         self.map_filter_tab = tab as u8;
+        self.map_filters_open = filters_open;
         self.traffic_filter = filter;
         if self.traffic_filter.active() && !filter_was_active {
             self.traffic_changed();
@@ -1874,6 +1994,50 @@ impl App {
             DIM,
         );
 
+        // Hovering the aircraft gives its numbers; a click locks the map on it.
+        if let Some((lat, lon, _)) = aircraft {
+            let at = self.map.screen_pos(rect, lat, lon);
+            if let Some(pointer) = ui.ctx().pointer_hover_pos() {
+                if at.distance(pointer) <= 18.0 {
+                    let tip_rect = egui::Rect::from_min_size(
+                        pointer + egui::vec2(18.0, 14.0),
+                        egui::vec2(190.0, 74.0),
+                    )
+                    .intersect(rect.shrink(6.0));
+                    let title = if callsign.trim().is_empty() || callsign == "----" {
+                        "YOUR AIRCRAFT".to_string()
+                    } else {
+                        callsign.clone()
+                    };
+                    let lines = [
+                        format!(
+                            "{} {} · {} kt",
+                            num(self.alt_val(t.alt_ft), 0),
+                            self.alt_unit(),
+                            num(t.gs_kt, 0)
+                        ),
+                        format!("Squawk {}", if squawk == "----" { "—" } else { squawk.as_str() }),
+                        "Click to follow".to_string(),
+                    ];
+                    overlay_m(ui, tip_rect, 9, |ui| {
+                        ui.spacing_mut().item_spacing.y = 1.0;
+                        ui.label(RichText::new(title).size(11.0).strong().color(TEXT));
+                        for line in lines {
+                            ui.label(RichText::new(line).size(9.5).color(MUTED));
+                        }
+                    });
+                    if map_response.clicked() {
+                        self.map.center_on(lat, lon);
+                        self.map.follow = true;
+                        self.toast_msg("Following the aircraft");
+                    }
+                }
+            }
+        }
+
+        if let Some(icao) = metar {
+            App::open_metar(&icao);
+        }
         if toggle_flight {
             self.toggle_flight();
         }
@@ -1951,35 +2115,6 @@ impl App {
             self.map_search.clear();
         }
 
-    }
-
-    /// ETA and enroute time, from live ground speed or from the SimBrief plan.
-    fn eta_ete(
-        &self,
-        t: &Telemetry,
-        plan: Option<&FlightPlan>,
-        fresh: bool,
-    ) -> (String, String) {
-        let total = plan.map(|p| p.total_nm()).unwrap_or(f64::NAN);
-        let remaining = match plan {
-            Some(plan) if fresh && t.position_valid() => {
-                plan.remaining_nm(t.lat, t.lon).unwrap_or(total)
-            }
-            Some(_) => total,
-            None => f64::NAN,
-        };
-        let ete = if self.gs_smooth > 40.0 && remaining.is_finite() {
-            remaining / self.gs_smooth * 3600.0
-        } else {
-            self.planned_ete().unwrap_or(f64::NAN)
-        };
-        if !ete.is_finite() || ete <= 0.0 {
-            return ("--:--Z".to_string(), "--:--".to_string());
-        }
-        (
-            fmt_zulu_hhmm(now_epoch() + ete as u64),
-            fmt_clock(ete),
-        )
     }
 
     /// Consecutive days (ending today or yesterday) with a recorded flight.

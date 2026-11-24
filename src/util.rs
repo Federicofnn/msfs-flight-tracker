@@ -137,8 +137,71 @@ pub fn fmt_utc_full(epoch: u64) -> String {
     )
 }
 
-/// "09:41Z" — wall clock for ETA chips.
-pub fn fmt_zulu_hhmm(epoch: u64) -> String {
-    let secs = epoch % 86_400;
-    format!("{:02}:{:02}Z", secs / 3600, (secs % 3600) / 60)
+/// Days since 1970-01-01 for a civil date (Howard Hinnant's algorithm).
+fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let mp = if m > 2 { m - 3 } else { m + 9 };
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
+/// Seconds the computer clock is ahead of UTC, so every time the app shows is
+/// the pilot's own wall clock instead of Zulu.
+#[cfg(windows)]
+pub fn local_offset_secs() -> i64 {
+    use windows_sys::Win32::Foundation::SYSTEMTIME;
+    use windows_sys::Win32::System::SystemInformation::GetLocalTime;
+
+    unsafe {
+        let mut local: SYSTEMTIME = std::mem::zeroed();
+        GetLocalTime(&mut local);
+        let local_epoch = days_from_civil(local.wYear as i64, local.wMonth as i64, local.wDay as i64)
+            * 86_400
+            + local.wHour as i64 * 3600
+            + local.wMinute as i64 * 60
+            + local.wSecond as i64;
+        let mut offset = local_epoch - now_epoch() as i64;
+        // The two clocks can be sampled across midnight.
+        while offset > 50_400 {
+            offset -= 86_400;
+        }
+        while offset < -50_400 {
+            offset += 86_400;
+        }
+        // Whole minutes: the samples are a few milliseconds apart.
+        (offset as f64 / 60.0).round() as i64 * 60
+    }
+}
+
+#[cfg(not(windows))]
+pub fn local_offset_secs() -> i64 {
+    0
+}
+
+/// "22:05" on the pilot's own clock.
+pub fn fmt_local_hhmm(epoch: u64) -> String {
+    let secs = (epoch as i64 + local_offset_secs()).rem_euclid(86_400);
+    format!("{:02}:{:02}", secs / 3600, (secs % 3600) / 60)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_clock_field_is_in_range() {
+        let sample = 1_766_000_000u64;
+        let hhmm = fmt_local_hhmm(sample);
+        let (hour, minute) = hhmm.split_once(':').expect("HH:MM");
+        assert!(hour.parse::<u32>().unwrap() < 24);
+        assert!(minute.parse::<u32>().unwrap() < 60);
+        assert!((-50_400..=50_400).contains(&local_offset_secs()));
+        // The local clock and Zulu agree up to the timezone offset.
+        let utc = sample % 86_400;
+        let local = (sample as i64 + local_offset_secs()).rem_euclid(86_400);
+        assert_eq!((local - utc as i64).rem_euclid(86_400), local_offset_secs().rem_euclid(86_400));
+    }
 }

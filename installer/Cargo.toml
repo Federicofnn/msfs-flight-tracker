@@ -1,6 +1,6 @@
 [package]
 name = "msfs-flight-tracker-setup"
-version = "1.6.1"
+version = "1.7.0"
 edition = "2021"
 description = "Installer for MSFS Flight Tracker"
 publish = false

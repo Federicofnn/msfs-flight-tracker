@@ -726,18 +726,64 @@ impl MapState {
             return;
         }
         let angle = (if heading.is_finite() { heading } else { 0.0 } as f32).to_radians();
+        let forward = vec2(angle.sin(), -angle.cos());
+        let side = vec2(angle.cos(), angle.sin());
+        let at = |along: f32, across: f32| p + forward * along + side * across;
 
-        painter.circle_filled(p, 13.0, Color32::from_rgba_unmultiplied(238, 66, 78, 30));
-        painter.circle_stroke(p, 13.0, Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(238, 66, 78, 110)));
+        // A soft halo marks the aircraft without swallowing the map, and the
+        // airliner silhouette keeps a nose, wings and a tailplane readable at
+        // any zoom.
+        painter.circle_filled(p, 17.0, Color32::from_rgba_unmultiplied(238, 66, 78, 24));
+        painter.circle_stroke(
+            p,
+            15.0,
+            Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(238, 66, 78, 64)),
+        );
 
-        let tip = p + vec2(angle.sin(), -angle.cos()) * 11.0;
-        let left = p + vec2(angle.cos(), angle.sin()) * 6.0 + vec2(-angle.sin(), angle.cos()) * 5.5;
-        let right = p + vec2(angle.cos(), angle.sin()) * 6.0 - vec2(-angle.sin(), angle.cos()) * 5.5;
-        let tail = p + vec2(angle.sin(), -angle.cos()) * -5.0;
+        let body = Color32::from_rgb(255, 246, 246);
+        let wing = Color32::from_rgb(236, 226, 228);
+        let edge = Stroke::new(1.0_f32, Color32::from_rgb(38, 20, 24));
+
+        // Wings and tailplane first, then the fuselage on top of them.
+        for flip in [1.0_f32, -1.0_f32] {
+            painter.add(egui::Shape::convex_polygon(
+                vec![
+                    at(2.4, 1.2 * flip),
+                    at(0.4, 8.8 * flip),
+                    at(-2.8, 8.8 * flip),
+                    at(-3.6, 1.4 * flip),
+                ],
+                wing,
+                edge,
+            ));
+            painter.add(egui::Shape::convex_polygon(
+                vec![
+                    at(-7.2, 1.3 * flip),
+                    at(-8.4, 5.2 * flip),
+                    at(-10.8, 5.2 * flip),
+                    at(-10.6, 1.3 * flip),
+                ],
+                wing,
+                edge,
+            ));
+        }
+        // Vertical fin, seen from above as a slim wedge.
         painter.add(egui::Shape::convex_polygon(
-            vec![tip, left, tail, right],
-            Color32::from_rgb(255, 120, 128),
-            Stroke::new(1.0_f32, Color32::from_rgb(30, 16, 20)),
+            vec![at(-8.8, 0.0), at(-12.4, 1.6), at(-12.4, -1.6)],
+            wing,
+            edge,
+        ));
+        painter.add(egui::Shape::convex_polygon(
+            vec![
+                at(12.0, 0.0),
+                at(7.4, 1.7),
+                at(-8.6, 1.9),
+                at(-11.4, 0.0),
+                at(-8.6, -1.9),
+                at(7.4, -1.7),
+            ],
+            body,
+            edge,
         ));
     }
 

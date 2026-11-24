@@ -121,6 +121,23 @@
   .pill { font-size: 9px; letter-spacing: .16em; font-weight: 600; padding: 5px 9px; border-radius: 999px; border: 1px solid var(--border); color: var(--muted); }
   .pill.live { color: var(--green); border-color: #24513a; background: #10231a; }
   .hidden { display: none !important; }
+
+  /* live flight */
+  .live-board { margin: 0 0 22px; }
+  .live-head { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; flex-wrap: wrap; }
+  .live-head b { font-size: 15px; letter-spacing: .08em; }
+  .live-route { display: flex; align-items: baseline; gap: 12px; font-family: var(--mono); font-size: 27px; font-weight: 600; letter-spacing: .02em; }
+  .live-route span { color: var(--dim); font-size: 18px; }
+  .track { height: 6px; border-radius: 999px; background: #241b1e; overflow: hidden; margin-top: 14px; }
+  .track > i { display: block; height: 100%; background: linear-gradient(90deg, var(--accent), #ff8a92); transition: width .4s ease; }
+  .live-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-top: 16px; }
+  .live-grid .k { font-size: 9px; letter-spacing: .18em; color: var(--dim); font-weight: 600; }
+  .live-grid .v { font-size: 19px; font-family: var(--mono); font-variant-numeric: tabular-nums; margin-top: 3px; }
+  .live-sub { font-size: 11.5px; color: var(--dim); margin-top: 12px; }
+  @media (max-width: 760px) {
+    .live-grid { grid-template-columns: repeat(2, 1fr); }
+    .live-route { font-size: 21px; }
+  }
   @media (max-width: 760px) {
     .stats { grid-template-columns: repeat(2, 1fr); }
     .brand b { font-size: 14px; }
@@ -163,6 +180,23 @@
   </section>
 
   <main id="board" class="hidden">
+    <section id="liveCard" class="panel live-board hidden">
+      <div class="live-head">
+        <span id="livePill" class="pill live">IN VOLO</span>
+        <b id="liveCallsign">—</b>
+        <span id="liveAircraft" class="sub"></span>
+      </div>
+      <div class="live-route"><b id="liveFrom">----</b><span>→</span><b id="liveTo">----</b></div>
+      <div class="track"><i id="liveBar" style="width:0%"></i></div>
+      <div class="live-grid">
+        <div><div class="k">ARRIVO PREVISTO</div><div class="v" id="liveEta">—</div></div>
+        <div><div class="k">TEMPO AL ARRIVO</div><div class="v" id="liveToGo">—</div></div>
+        <div><div class="k">DISTANZA</div><div class="v" id="liveNm">—</div></div>
+        <div><div class="k">QUOTA · GS</div><div class="v" id="liveAlt">—</div></div>
+      </div>
+      <div class="live-sub" id="liveNote"></div>
+    </section>
+
     <div class="stats">
       <div class="stat"><div class="k">VOLI</div><div class="v" id="sFlights">0</div></div>
       <div class="stat"><div class="k">ORE DI VOLO</div><div class="v" id="sHours">0<small>h</small></div></div>
@@ -222,6 +256,7 @@
   const state = {
     code: cleanCode(fromUrl() || localStorage.getItem("mft_code") || localStorage.getItem("mft_gist") || ""),
     flights: [],
+    live: null,
     updated: 0,
     query: "",
   };
@@ -288,6 +323,7 @@
     const parsed = JSON.parse(content);
     state.flights = Array.isArray(parsed) ? parsed : (parsed.flights || []);
     state.updated = Number(parsed.updated) || 0;
+    state.live = (!Array.isArray(parsed) && parsed.live) || null;
   }
 
   function render() {
@@ -305,12 +341,48 @@
     $("sNm").innerHTML = `${num(totalNm)}<small>nm</small>`;
     $("sFpm").innerHTML = best === null ? "—" : `${num(best)}<small>fpm</small>`;
 
+    renderLive();
     renderBars(flights);
     renderRows(flights);
     $("updated").textContent = state.updated
       ? `Ultimo aggiornamento: ${new Date(state.updated * 1000).toLocaleString("it-IT")}`
       : "";
     $("gistLink").href = `https://gist.github.com/${state.code}`;
+  }
+
+  /** The flight in progress, written by the app while it flies. */
+  function renderLive() {
+    const live = state.live;
+    const card = $("liveCard");
+    if (!live || !live.updated) {
+      card.classList.add("hidden");
+      return;
+    }
+    const age = Date.now() / 1000 - Number(live.updated);
+    const fresh = age < 6 * 60;
+    card.classList.remove("hidden");
+    $("liveCallsign").textContent = live.callsign || "VOLO";
+    $("liveAircraft").textContent = live.aircraft || "";
+    $("liveFrom").textContent = live.origin || "----";
+    $("liveTo").textContent = live.dest || "----";
+    const pct = Math.max(0, Math.min(100, (Number(live.progress) || 0) * 100));
+    $("liveBar").style.width = pct.toFixed(1) + "%";
+    const eta = Number(live.eta) || 0;
+    $("liveEta").textContent = eta
+      ? new Date(eta * 1000).toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit" })
+      : "—";
+    $("liveToGo").textContent = Number.isFinite(Number(live.ete_s)) ? dur(live.ete_s) : "—";
+    $("liveNm").textContent = `${num(live.remaining_nm)} / ${num(live.total_nm)} nm`;
+    $("liveAlt").textContent = live.on_ground
+      ? "A TERRA"
+      : `${num(live.alt_ft)} ft · ${num(live.gs_kt)} kt`;
+    const when = new Date(Number(live.updated) * 1000).toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit" });
+    $("liveNote").textContent = fresh
+      ? `Aggiornato alle ${when} · si aggiorna da solo ogni minuto`
+      : `Ultimo dato ricevuto alle ${when}: l'aereo non sta trasmettendo in questo momento.`;
+    const pill = $("livePill");
+    pill.textContent = fresh ? "IN VOLO" : "ULTIMO DATO";
+    pill.className = "pill" + (fresh ? " live" : "");
   }
 
   function renderBars(flights) {
@@ -408,6 +480,7 @@
       await readGist();
       showBoard();
       render();
+      startAuto();
     } catch (err) {
       showLogin(err.message);
     } finally {
@@ -415,6 +488,30 @@
       button.textContent = "Apri il logbook";
     }
   }
+
+  /** Keeps the logbook and the live flight current without a manual reload. */
+  let autoTimer = null;
+  function startAuto() {
+    if (autoTimer) clearInterval(autoTimer);
+    autoTimer = setInterval(() => {
+      if (!document.hidden) refreshSilently();
+    }, 60000);
+  }
+
+  async function refreshSilently() {
+    if (!state.code) return;
+    try {
+      await readGist();
+      render();
+      setStatus("AGGIORNATO", true);
+    } catch (err) {
+      setStatus("AGGIORNAMENTO FALLITO");
+    }
+  }
+
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden && state.code) refreshSilently();
+  });
 
   async function refresh() {
     const button = $("refreshBtn");

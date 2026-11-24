@@ -91,6 +91,8 @@ pub const FIELDS: &[Field] = &[
     Field { name: "ATC ID", units: "", ty: Ty::Str },                             // 40
     Field { name: "ATC AIRLINE", units: "", ty: Ty::Str },                        // 41
     Field { name: "ATC FLIGHT NUMBER", units: "", ty: Ty::Str },                  // 42
+    // Second copy of the transponder code: some aircraft only answer it as text.
+    Field { name: "TRANSPONDER CODE:1", units: "BCO16", ty: Ty::Str },             // 43
 ];
 
 impl Ty {
@@ -149,6 +151,27 @@ enum Idx {
     AtcId,
     AtcAirline,
     AtcFlight,
+    SquawkText,
+}
+
+/// The transponder code arrives as BCD (`0x1000` for squawk 1000) on most
+/// aircraft and as a plain number on some. The text copy covers the aircraft
+/// that only publish it as a string.
+fn squawk_code(raw: i64, text: &str) -> String {
+    if raw > 0 {
+        let hex = format!("{raw:X}");
+        if hex.len() <= 4 && hex.chars().all(|c| ('0'..='7').contains(&c)) {
+            return format!("{hex:0>4}");
+        }
+        if raw <= 7_777 {
+            return format!("{raw:04}");
+        }
+    }
+    let digits: String = text.chars().filter(|c| c.is_ascii_digit()).collect();
+    if digits.len() == 4 {
+        return digits;
+    }
+    String::new()
 }
 
 const DEF_ID: u32 = 1;
@@ -581,14 +604,7 @@ unsafe fn decode(base: *const u8, size: u32, layout: &Layout) -> Option<Telemetr
         wp_dist_nm: n(Idx::WpDist),
         wp_ete_s: n(Idx::WpEte),
         wp_track: n(Idx::WpTrack),
-        squawk: {
-            let code = n(Idx::Squawk) as i64;
-            if code > 0 && code <= 0x7777 {
-                format!("{code:04X}")
-            } else {
-                String::new()
-            }
-        },
+        squawk: squawk_code(n(Idx::Squawk) as i64, &s(Idx::SquawkText)),
         title: s(Idx::Title),
         atc_model: s(Idx::AtcModel),
         wp_next: s(Idx::WpNext),
@@ -722,6 +738,17 @@ mod tests {
             },
             Err(err) => println!("dll: {err}"),
         }
+    }
+
+    #[test]
+    fn squawk_reads_bcd_and_plain_numbers() {
+        assert_eq!(squawk_code(0x1000, ""), "1000");
+        assert_eq!(squawk_code(0x1200, ""), "1200");
+        assert_eq!(squawk_code(4321, ""), "4321");
+        assert_eq!(squawk_code(1200, ""), "1200");
+        assert_eq!(squawk_code(0, "1000"), "1000");
+        assert_eq!(squawk_code(0, "SPD 7700"), "7700");
+        assert_eq!(squawk_code(0, ""), "");
     }
 
     #[test]

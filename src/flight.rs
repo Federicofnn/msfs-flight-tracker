@@ -148,6 +148,15 @@ impl Default for Recorder {
 }
 
 impl Recorder {
+    /// Wall clock of the takeoff (0 when nothing is recording).
+    pub fn started_epoch(&self) -> u64 {
+        if self.active {
+            self.started_epoch
+        } else {
+            0
+        }
+    }
+
     pub fn new() -> Self {
         Self {
             active: false,

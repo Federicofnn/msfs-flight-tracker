@@ -44,14 +44,18 @@ pub fn for_cloud(flights: &[FlightRecord]) -> Vec<FlightRecord> {
         .collect()
 }
 
-pub fn payload(flights: &[FlightRecord]) -> String {
-    serde_json::json!({
+pub fn payload(flights: &[FlightRecord], live: Option<&serde_json::Value>) -> String {
+    let mut json = serde_json::json!({
         "app": "MSFS Flight Tracker",
         "version": crate::update::VERSION,
         "updated": now_epoch(),
         "flights": for_cloud(flights),
-    })
-    .to_string()
+    });
+    // The flight in progress, so the website can follow it from anywhere.
+    if let Some(live) = live {
+        json["live"] = live.clone();
+    }
+    json.to_string()
 }
 
 fn explain(status: u32) -> String {
@@ -65,11 +69,16 @@ fn explain(status: u32) -> String {
 }
 
 /// Uploads the logbook and returns the id of the gist that holds it.
-pub fn push(token: &str, gist: &str, flights: &[FlightRecord]) -> Result<String, String> {
+pub fn push(
+    token: &str,
+    gist: &str,
+    flights: &[FlightRecord],
+    live: Option<&serde_json::Value>,
+) -> Result<String, String> {
     if token.trim().is_empty() {
         return Err("Add a GitHub token first".to_string());
     }
-    let content = serde_json::to_string(&payload(flights))
+    let content = serde_json::to_string(&payload(flights, live))
         .map_err(|e| format!("Cannot encode the logbook: {e}"))?;
     let id = gist.trim();
     if id.is_empty() {
@@ -171,10 +180,20 @@ mod tests {
 
     #[test]
     fn payload_is_readable_by_the_website() {
-        let text = payload(&[record("a", 5)]);
+        let text = payload(&[record("a", 5)], None);
         let json: serde_json::Value = serde_json::from_str(&text).unwrap();
         assert_eq!(json["flights"][0]["id"], "a");
         assert!(json["version"].is_string());
+        assert!(json.get("live").is_none());
+    }
+
+    #[test]
+    fn the_live_flight_travels_with_the_logbook() {
+        let live = serde_json::json!({ "callsign": "ITY610", "eta": 1_766_000_000u64 });
+        let text = payload(&[], Some(&live));
+        let json: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(json["live"]["callsign"], "ITY610");
+        assert_eq!(json["flights"].as_array().unwrap().len(), 0);
     }
 
     #[test]
@@ -188,13 +207,18 @@ mod tests {
         flight.origin = "LIRF".to_string();
         flight.dest = "LIRN".to_string();
         flight.duration_s = 3600.0;
-        let id = push(&token, "", &[flight.clone()]).expect("create gist");
+        let id = push(&token, "", &[flight.clone()], None).expect("create gist");
         println!("created gist {id}");
         let pulled = pull(&token, &id).expect("read gist");
         assert_eq!(pulled.len(), 1);
         assert_eq!(pulled[0].origin, "LIRF");
-        let updated = push(&token, &id, &[flight, record("roundtrip-2", 1_700_000_100)])
-            .expect("update gist");
+        let updated = push(
+            &token,
+            &id,
+            &[flight, record("roundtrip-2", 1_700_000_100)],
+            None,
+        )
+        .expect("update gist");
         assert_eq!(updated, id);
         assert_eq!(pull(&token, &id).expect("read again").len(), 2);
         let url = format!("{API}/gists/{id}");

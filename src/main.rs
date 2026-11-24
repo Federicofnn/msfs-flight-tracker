@@ -59,6 +59,7 @@ enum NetJob {
         token: String,
         gist: String,
         flights: Vec<FlightRecord>,
+        live: Option<serde_json::Value>,
     },
     CloudPull {
         token: String,
@@ -104,8 +105,9 @@ fn spawn_net() -> (Sender<NetJob>, Receiver<NetDone>) {
                     token,
                     gist,
                     flights,
+                    live,
                 } => {
-                    let result = cloud::push(&token, &gist, &flights);
+                    let result = cloud::push(&token, &gist, &flights, live.as_ref());
                     let _ = done_tx.send(NetDone::CloudPush(result));
                 }
                 NetJob::CloudPull { token, gist } => {
@@ -149,6 +151,8 @@ pub struct App {
     update_next: Instant,
     pub map_search: String,
     pub map_filter_tab: u8,
+    pub map_filters_open: bool,
+    live_next: Instant,
     pub tele: Telemetry,
     has_tele: bool,
     pub last_rx: Instant,
@@ -216,6 +220,8 @@ impl App {
                 .ok()
                 .and_then(|value| value.parse().ok())
                 .unwrap_or(0),
+            map_filters_open: true,
+            live_next: Instant::now(),
             tele: Telemetry::default(),
             has_tele: false,
             last_rx: Instant::now() - Duration::from_secs(10),
@@ -232,6 +238,7 @@ impl App {
                 .as_str()
             {
                 "map" => Page::Map,
+                "deck" | "dashboard" => Page::Dashboard,
                 "plan" => Page::Plan,
                 "logbook" => Page::Logbook,
                 "stats" => Page::Stats,
@@ -438,10 +445,12 @@ impl App {
         let token = self.store.settings.github_token.trim().to_string();
         let gist = self.store.settings.github_gist.trim().to_string();
         let flights = self.store.flights.clone();
+        let live = self.live_json();
         let job = NetJob::CloudPush {
             token,
             gist,
             flights,
+            live,
         };
         if self.net_tx.send(job).is_err() {
             self.cloud_busy = false;
@@ -466,6 +475,61 @@ impl App {
         }
     }
 
+    /// The flight in progress as the website reads it, so a pilot away from
+    /// the simulator can still follow the route, the ETA and the position.
+    pub fn live_json(&self) -> Option<serde_json::Value> {
+        let plan = self.plan.as_ref()?;
+        if !self.recorder.active && !self.fresh() {
+            return None;
+        }
+        let t = &self.tele;
+        let trip = self.trip(t, plan, self.fresh());
+        let callsign = self
+            .briefing
+            .as_ref()
+            .map(|briefing| briefing.callsign.clone())
+            .filter(|value| !value.trim().is_empty())
+            .or_else(|| (!t.atc_id.trim().is_empty()).then(|| t.atc_id.trim().to_string()))
+            .unwrap_or_default();
+        Some(serde_json::json!({
+            "callsign": callsign,
+            "aircraft": t.atc_model.trim(),
+            "origin": plan.origin,
+            "dest": plan.dest,
+            "lat": t.lat,
+            "lon": t.lon,
+            "alt_ft": t.alt_ft,
+            "gs_kt": t.gs_kt,
+            "hdg": t.hdg_true,
+            "squawk": t.squawk,
+            "on_ground": t.on_ground,
+            "recording": self.recorder.active,
+            "started": self.recorder.started_epoch(),
+            "progress": trip.fraction,
+            "remaining_nm": trip.remaining_nm,
+            "total_nm": trip.total_nm,
+            "ete_s": trip.ete_s,
+            "eta": trip.eta_epoch,
+            "updated": util::now_epoch(),
+        }))
+    }
+
+    /// Opens a link in the pilot's browser (METAR, logbook site…).
+    pub fn open_external(url: &str) {
+        let _ = std::process::Command::new("cmd")
+            .args(["/C", "start", "", url])
+            .spawn();
+    }
+
+    /// METAR, TAF and airport weather on metar-taf.com (Italian edition).
+    pub fn open_metar(icao: &str) {
+        let icao = icao.trim().to_uppercase();
+        if icao.is_empty() {
+            return;
+        }
+        Self::open_external(&format!("https://metar-taf.com/it/{icao}"));
+    }
+
     pub fn open_site(&self) {
         // The code in the link means the site opens the logbook straight away.
         let gist = self.store.settings.github_gist.trim();
@@ -474,9 +538,7 @@ impl App {
         } else {
             format!("https://federicofnn.github.io/msfs-flight-tracker/#{gist}")
         };
-        let _ = std::process::Command::new("cmd")
-            .args(["/C", "start", "", &url])
-            .spawn();
+        Self::open_external(&url);
     }
 
     pub fn check_updates(&mut self, manual: bool) {
@@ -878,6 +940,19 @@ impl App {
             self.check_updates(false);
         }
 
+        // The website follows the flight while it is in progress: a light
+        // update every couple of minutes keeps it current without hammering
+        // the GitHub API.
+        if !self.store.settings.github_token.trim().is_empty()
+            && !self.store.settings.github_gist.trim().is_empty()
+            && (self.recorder.active || (self.fresh() && self.plan.is_some()))
+            && !self.cloud_busy
+            && Instant::now() >= self.live_next
+        {
+            self.live_next = Instant::now() + Duration::from_secs(90);
+            self.push_cloud(true);
+        }
+
         if let Some((_, at, _)) = &self.toast {
             if at.elapsed() > Duration::from_secs(6) {
                 self.toast = None;
@@ -972,8 +1047,8 @@ impl App {
                 );
                 ui.add_space(20.0);
                 for page in [
-                    Page::Dashboard,
                     Page::Map,
+                    Page::Dashboard,
                     Page::Plan,
                     Page::Logbook,
                     Page::Stats,
@@ -1047,7 +1122,7 @@ impl App {
                         }
                         ui.add_space(6.0);
                         ui.label(
-                            egui::RichText::new(util::fmt_zulu_hhmm(util::now_epoch()))
+                            egui::RichText::new(util::fmt_local_hhmm(util::now_epoch()))
                                 .size(12.0)
                                 .family(egui::FontFamily::Monospace)
                                 .color(theme::MUTED),
