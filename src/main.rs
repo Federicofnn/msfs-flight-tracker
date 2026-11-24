@@ -558,6 +558,11 @@ impl App {
             .filter(|value| !value.trim().is_empty())
             .or_else(|| (!t.atc_id.trim().is_empty()).then(|| t.atc_id.trim().to_string()))
             .unwrap_or_default();
+        // The website draws the planned route, the flown trail and the plane
+        // itself, so the logbook page is also the flight-following page.
+        let route = sampled_path(&plan.points(), 60);
+        let taken: Vec<(f64, f64)> = self.recorder.track.iter().map(|p| (p.lat, p.lon)).collect();
+        let trail = sampled_path(&taken, 120);
         Some(serde_json::json!({
             "callsign": callsign,
             "aircraft": t.atc_model.trim(),
@@ -570,6 +575,10 @@ impl App {
             "hdg": t.hdg_true,
             "squawk": t.squawk,
             "on_ground": t.on_ground,
+            "origin_pos": plan.origin_pos.map(|(lat, lon)| [lat, lon]),
+            "dest_pos": plan.dest_pos.map(|(lat, lon)| [lat, lon]),
+            "route": route,
+            "trail": trail,
             "recording": self.recorder.active,
             "started": self.recorder.started_epoch(),
             "progress": trip.fraction,
@@ -1555,4 +1564,48 @@ fn main() -> eframe::Result {
             Ok(Box::new(App::new(demo)))
         }),
     )
+}
+
+/// A compact copy of a path for the website map: never more than `max` points
+/// and always the real last one, so a long flight does not bloat the gist.
+fn sampled_path(points: &[(f64, f64)], max: usize) -> Vec<[f64; 2]> {
+    if points.is_empty() || max < 2 {
+        return Vec::new();
+    }
+    let round = |value: f64| (value * 10_000.0).round() / 10_000.0;
+    let step = (points.len() as f64 / (max - 1) as f64).ceil().max(1.0) as usize;
+    let mut out: Vec<[f64; 2]> = points
+        .iter()
+        .step_by(step)
+        .map(|p| [round(p.0), round(p.1)])
+        .collect();
+    let last = points[points.len() - 1];
+    let last = [round(last.0), round(last.1)];
+    if out.last().copied() != Some(last) {
+        if out.len() >= max {
+            out.pop();
+        }
+        out.push(last);
+    }
+    out
+}
+
+#[cfg(test)]
+mod path_tests {
+    use super::sampled_path;
+
+    #[test]
+    fn a_long_path_is_thinned_but_keeps_its_end() {
+        let points: Vec<(f64, f64)> = (0..500).map(|i| (40.0 + i as f64 * 0.01, 12.0)).collect();
+        let path = sampled_path(&points, 60);
+        assert!(path.len() <= 60, "{} points", path.len());
+        assert_eq!(path[0], [40.0, 12.0]);
+        assert_eq!(*path.last().unwrap(), [44.99, 12.0]);
+    }
+
+    #[test]
+    fn a_short_path_is_kept_whole() {
+        let points = vec![(41.8, 12.25), (40.88, 14.29)];
+        assert_eq!(sampled_path(&points, 60), vec![[41.8, 12.25], [40.88, 14.29]]);
+    }
 }
